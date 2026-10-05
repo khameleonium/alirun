@@ -1,5 +1,8 @@
 # 🚀 Alirun
 
+> **Создатель: Илья Ульянов | khameleonium** ([@khameleonium](https://github.com/khameleonium))  
+> **Author / Creator: Ilya Ulyanov | khameleonium**
+
 [English](#-english) | [Русский](#-русский)
 
 ---
@@ -234,6 +237,7 @@ alirun/
 │   ├── alirun/main.go        # Точка входа
 │   ├── root.go               # Запуск TUI по умолчанию, глобальные флаги
 │   ├── create.go             # Интерактивный визард создания юнита
+│   ├── cron.go               # Управление задачами cron (list, add, toggle, run, rm)
 │   ├── list.go               # Таблица служб (Lip Gloss)
 │   ├── status.go             # Детальный статус и инспектор
 │   ├── control.go            # start/stop/restart/enable/disable/delete
@@ -250,6 +254,7 @@ alirun/
 │   │   ├── manager.go        # Интерфейс initsys.Manager
 │   │   ├── registry.go       # Реестр и автоопределение инит-системы
 │   │   ├── systemd/          # Провайдер Systemd (D-Bus API, go-systemd)
+│   │   ├── cron/             # Провайдер Cron (crontab, /etc/crontab, parser, humanizer)
 │   │   ├── xdg/              # Провайдер XDG (~/.config/autostart/)
 │   │   └── openrc/           # Провайдер OpenRC (модульная заготовка)
 │   ├── detector/             # Анализ файлов, shebang, chmod, virtualenv
@@ -258,6 +263,14 @@ alirun/
 ├── Makefile                  # Сборка, тесты, установка, обновление
 └── go.mod                    # Go зависимости
 ```
+
+---
+
+## 👤 Создатель / Author
+
+**Илья Ульянов | khameleonium**
+- **GitHub**: [https://github.com/khameleonium](https://github.com/khameleonium)
+- **Репозиторий**: [https://github.com/khameleonium/alirun](https://github.com/khameleonium/alirun)
 
 ---
 

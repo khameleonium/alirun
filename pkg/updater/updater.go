@@ -22,7 +22,7 @@ var (
 
 // Info returns a formatted string with version and build details
 func Info() string {
-	return fmt.Sprintf("Alirun %s (commit: %s, built: %s, %s/%s, %s)",
+	return fmt.Sprintf("Alirun %s (commit: %s, built: %s, %s/%s, %s)\nСоздатель: Илья Ульянов | khameleonium",
 		Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 

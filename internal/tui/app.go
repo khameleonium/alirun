@@ -147,23 +147,75 @@ func NewModel(mgr initsys.Manager, sType initsys.ServiceType) *Model {
 	return m
 }
 
-func (m *Model) updateTableColumns() {
+func (m *Model) calcLeftWidth() int {
 	if m.viewMode == TableViewDetailed {
-		m.table.SetColumns([]table.Column{
+		leftWidth := m.width * 60 / 100
+		if leftWidth < 68 {
+			leftWidth = 68
+		}
+		if leftWidth > m.width-30 {
+			leftWidth = m.width - 30
+		}
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
+		return leftWidth
+	}
+	leftWidth := m.width * 45 / 100
+	if leftWidth < 30 {
+		leftWidth = 30
+	}
+	return leftWidth
+}
+
+func (m *Model) getTableColumns() []table.Column {
+	leftWidth := m.calcLeftWidth()
+	if m.viewMode == TableViewDetailed {
+		// Available inner table width = leftWidth - 4
+		// Fixed column widths: ST: 5, STATE: 9, CPU: 8, RAM: 9, UPTIME: 8, PID: 7. Total fixed = 46.
+		svcWidth := (leftWidth - 4) - 46 - 4
+		if svcWidth < 18 {
+			svcWidth = 18
+		}
+		return []table.Column{
 			{Title: "ST", Width: 5},
-			{Title: "SERVICE", Width: 20},
+			{Title: "SERVICE", Width: svcWidth},
 			{Title: "STATE", Width: 9},
 			{Title: "CPU", Width: 8},
 			{Title: "RAM", Width: 9},
 			{Title: "UPTIME", Width: 8},
 			{Title: "PID", Width: 7},
-		})
-	} else {
-		m.table.SetColumns([]table.Column{
-			{Title: "ST", Width: 5},
-			{Title: "SERVICE", Width: 26},
-			{Title: "STATE", Width: 10},
-		})
+		}
+	}
+
+	// Compact mode: ST: 5, STATE: 10. Total fixed = 15.
+	svcWidth := (leftWidth - 4) - 15 - 4
+	if svcWidth < 22 {
+		svcWidth = 22
+	}
+	return []table.Column{
+		{Title: "ST", Width: 5},
+		{Title: "SERVICE", Width: svcWidth},
+		{Title: "STATE", Width: 10},
+	}
+}
+
+func (m *Model) syncTableData(cols []table.Column, rows []table.Row, targetCursor int) {
+	// CRITICAL: First reset rows to empty. bubbles/table renders rows inside SetColumns()
+	// and SetRows(). If old rows have more columns than new cols, bubbles/table panics
+	// with "index out of range" during row rendering.
+	m.table.SetRows(nil)
+	m.table.SetColumns(cols)
+	m.table.SetRows(rows)
+
+	if len(rows) > 0 {
+		if targetCursor < 0 {
+			targetCursor = 0
+		}
+		if targetCursor >= len(rows) {
+			targetCursor = len(rows) - 1
+		}
+		m.table.SetCursor(targetCursor)
 	}
 }
 
@@ -224,6 +276,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.recalcLayout()
+		m.applyFilter()
 		return m, nil
 
 	case tickMsg:
@@ -765,27 +818,10 @@ func (m *Model) renderDashboardView() string {
 	header := HeaderStyle.Width(m.width).Render(headerText)
 
 	// 2. Main content panes
-	var leftWidth int
-	if m.viewMode == TableViewDetailed {
-		leftWidth = m.width * 60 / 100
-		if leftWidth < 68 {
-			leftWidth = 68
-		}
-		if leftWidth > m.width-30 {
-			leftWidth = m.width - 30
-		}
-		if leftWidth < 30 {
-			leftWidth = 30
-		}
-	} else {
-		leftWidth = m.width * 45 / 100
-		if leftWidth < 30 {
-			leftWidth = 30
-		}
-	}
+	leftWidth := m.calcLeftWidth()
 	rightWidth := m.width - leftWidth - 4
 
-	bodyHeight := m.height - 4
+	bodyHeight := m.height - 5
 	if bodyHeight < 10 {
 		bodyHeight = 10
 	}
@@ -1049,31 +1085,77 @@ func (m *Model) renderDetails() string {
 }
 
 func (m *Model) renderFooter() string {
+	// 1. Navigation hints line (ALWAYS visible in all normal modes)
+	var hintsLine string
+	if m.searchMode {
+		hintsLine = fmt.Sprintf("%s Select in Table    %s Clear filter & Exit    %s Navigate Results",
+			KeyHintStyle.Render("[Tab/Enter]"),
+			KeyHintStyle.Render("[Esc]"),
+			KeyHintStyle.Render("[↑/↓]"),
+		)
+	} else if m.confirmDelete {
+		hintsLine = fmt.Sprintf("%s Confirm Deletion    %s Cancel and keep service",
+			lipgloss.NewStyle().Bold(true).Background(ColorFailed).Foreground(lipgloss.Color("#FFFFFF")).Render(" [Y] "),
+			KeyHintStyle.Render("[Any other key]"),
+		)
+	} else {
+		if m.width < 95 {
+			hints := []string{
+				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(" [N]ew ") + " ",
+				KeyHintStyle.Render("[V]") + "iew",
+				KeyHintStyle.Render("[O/P]") + "Sort",
+				KeyHintStyle.Render("[Tab]") + "Focus",
+				KeyHintStyle.Render("[S]") + "tart",
+				KeyHintStyle.Render("[X]") + "top",
+				KeyHintStyle.Render("[R]") + "estart",
+				KeyHintStyle.Render("[Del]") + "ete",
+				KeyHintStyle.Render("[/]") + "Search",
+				KeyHintStyle.Render("[Q]") + "uit",
+			}
+			hintsLine = strings.Join(hints, "  ")
+		} else {
+			hints := []string{
+				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(" [N]ew Daemon ") + " ",
+				KeyHintStyle.Render("[V]") + "iew",
+				KeyHintStyle.Render("[O/P]") + " Sort (1-6)",
+				KeyHintStyle.Render("[Tab]") + " Focus",
+				KeyHintStyle.Render("[S]") + "tart",
+				KeyHintStyle.Render("[X]") + "top",
+				KeyHintStyle.Render("[R]") + "estart",
+				KeyHintStyle.Render("[E]") + "nable",
+				KeyHintStyle.Render("[D]") + "isable",
+				KeyHintStyle.Render("[Del]") + "ete",
+				KeyHintStyle.Render("[U]") + "ser/Sys",
+				KeyHintStyle.Render("[/]") + "Search",
+				KeyHintStyle.Render("[Q]") + "uit",
+			}
+			hintsLine = strings.Join(hints, "  ")
+		}
+	}
+
+	// 2. Status message line (Line 1): Shows sorting result, actions, errors, or ready state
+	var statusLine string
 	if m.statusMessage != "" {
 		color := ColorActive
+		icon := "ℹ"
 		if m.statusIsError {
 			color = ColorFailed
+			icon = "⚠"
 		}
-		return lipgloss.NewStyle().Foreground(color).Bold(true).Render(m.statusMessage)
+		statusLine = lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%s %s", icon, m.statusMessage))
+	} else if m.searchMode {
+		statusLine = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("🔍 Search active: Type service name or description to filter in real-time")
+	} else {
+		selName := "None"
+		if cur := m.currentSelected(); cur != nil {
+			selName = cur.Name
+		}
+		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#B0BEC5")).Render(
+			fmt.Sprintf("● Ready  |  %d services  |  Selected: %s", len(m.services), selName),
+		)
 	}
 
-	hints := []string{
-		lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(" [N]ew Daemon ") + " ",
-		KeyHintStyle.Render("[V]") + "iew",
-		KeyHintStyle.Render("[O/P]") + " Sort",
-		KeyHintStyle.Render("[Tab]") + " Focus",
-		KeyHintStyle.Render("[S]") + "tart",
-		KeyHintStyle.Render("[X]") + "top",
-		KeyHintStyle.Render("[R]") + "estart",
-		KeyHintStyle.Render("[E]") + "nable",
-		KeyHintStyle.Render("[D]") + "isable",
-		KeyHintStyle.Render("[Del]") + "ete",
-		KeyHintStyle.Render("[U]") + "ser/Sys",
-		KeyHintStyle.Render("[/]") + "Search",
-		KeyHintStyle.Render("[Q]") + "uit",
-	}
-
-	return strings.Join(hints, "  ")
+	return fmt.Sprintf("%s\n%s", statusLine, hintsLine)
 }
 
 func (m *Model) recalcLayout() {
@@ -1081,37 +1163,22 @@ func (m *Model) recalcLayout() {
 		return
 	}
 
-	var leftWidth int
-	if m.viewMode == TableViewDetailed {
-		leftWidth = m.width * 60 / 100
-		if leftWidth < 68 {
-			leftWidth = 68
-		}
-		if leftWidth > m.width-30 {
-			leftWidth = m.width - 30
-		}
-		if leftWidth < 30 {
-			leftWidth = 30
-		}
-	} else {
-		leftWidth = m.width * 45 / 100
-		if leftWidth < 30 {
-			leftWidth = 30
-		}
+	leftWidth := m.calcLeftWidth()
+
+	bodyHeight := m.height - 5
+	if bodyHeight < 10 {
+		bodyHeight = 10
 	}
 
 	m.table.SetWidth(leftWidth - 4)
-	m.table.SetHeight(m.height - 7)
+	m.table.SetHeight(bodyHeight - 2)
 
 	rightWidth := m.width - leftWidth - 6
-	bodyHeight := m.height - 4
 	detailsHeight := bodyHeight * 38 / 100
 	logsHeight := bodyHeight - detailsHeight - 3
 
 	m.logsViewport.Width = rightWidth
 	m.logsViewport.Height = logsHeight
-
-	m.updateTableColumns()
 }
 
 func (m *Model) currentSelected() *initsys.ServiceInfo {
@@ -1144,8 +1211,6 @@ func (m *Model) applyFilter() {
 
 	// Sort filtered services
 	SortServices(filtered, m.sortField, m.sortDir)
-
-	m.updateTableColumns()
 
 	var rows []table.Row
 	for _, s := range filtered {
@@ -1190,7 +1255,6 @@ func (m *Model) applyFilter() {
 	}
 
 	m.services = filtered
-	m.table.SetRows(rows)
 
 	// Preserve selected service
 	newCursor := 0
@@ -1202,12 +1266,9 @@ func (m *Model) applyFilter() {
 			}
 		}
 	}
-	if len(rows) > 0 {
-		if newCursor >= len(rows) {
-			newCursor = len(rows) - 1
-		}
-		m.table.SetCursor(newCursor)
-	}
+
+	cols := m.getTableColumns()
+	m.syncTableData(cols, rows, newCursor)
 }
 
 // Commands

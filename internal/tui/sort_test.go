@@ -2,6 +2,8 @@ package tui
 
 import (
 	"alirun/pkg/initsys"
+	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,5 +70,83 @@ func TestFormatters(t *testing.T) {
 
 	if FormatPID(0) != "-" || FormatPID(1234) != "1234" {
 		t.Errorf("unexpected FormatPID result")
+	}
+}
+
+type dummyManager struct{}
+
+func (d *dummyManager) Name() string                                                             { return "dummy" }
+func (d *dummyManager) IsAvailable() bool                                                        { return true }
+func (d *dummyManager) ListServices(ctx context.Context, sType initsys.ServiceType) ([]initsys.ServiceInfo, error) {
+	return []initsys.ServiceInfo{
+		{Name: "svc1.service", Status: initsys.StatusActive, SubState: "running", MemoryBytes: 100 * 1024 * 1024, CPUUsageNSec: 5000000000, PID: 1234},
+		{Name: "svc2.service", Status: initsys.StatusFailed, SubState: "failed", MemoryBytes: 50 * 1024 * 1024, CPUUsageNSec: 1000000000, PID: 5678},
+	}, nil
+}
+func (d *dummyManager) GetStatus(ctx context.Context, name string, sType initsys.ServiceType) (*initsys.ServiceInfo, error) {
+	return &initsys.ServiceInfo{Name: name, Status: initsys.StatusActive}, nil
+}
+func (d *dummyManager) Start(ctx context.Context, name string, sType initsys.ServiceType) error   { return nil }
+func (d *dummyManager) Stop(ctx context.Context, name string, sType initsys.ServiceType) error    { return nil }
+func (d *dummyManager) Restart(ctx context.Context, name string, sType initsys.ServiceType) error { return nil }
+func (d *dummyManager) Enable(ctx context.Context, name string, sType initsys.ServiceType) error  { return nil }
+func (d *dummyManager) Disable(ctx context.Context, name string, sType initsys.ServiceType) error { return nil }
+func (d *dummyManager) GenerateConfig(cfg initsys.ServiceConfig) (string, error)                  { return "", nil }
+func (d *dummyManager) GetConfigPath(name string, sType initsys.ServiceType) string               { return "/mock" }
+func (d *dummyManager) InstallService(ctx context.Context, cfg initsys.ServiceConfig, content string, enableNow bool) (string, error) {
+	return "/mock", nil
+}
+func (d *dummyManager) DeleteService(ctx context.Context, name string, sType initsys.ServiceType) error {
+	return nil
+}
+func (d *dummyManager) StreamLogs(ctx context.Context, name string, sType initsys.ServiceType, lines int, follow bool) (<-chan string, error) {
+	ch := make(chan string)
+	close(ch)
+	return ch, nil
+}
+
+func TestViewModeToggleNoPanic(t *testing.T) {
+	m := NewModel(&dummyManager{}, initsys.TypeSystem)
+	m.width = 120
+	m.height = 40
+	m.rawServices = []initsys.ServiceInfo{
+		{Name: "alpha.service", Status: initsys.StatusActive, SubState: "running", MemoryBytes: 200 * 1024 * 1024, CPUUsageNSec: 5000000000, PID: 123},
+		{Name: "beta.service", Status: initsys.StatusFailed, SubState: "failed", MemoryBytes: 100 * 1024 * 1024, CPUUsageNSec: 1000000000, PID: 456},
+	}
+	m.recalcLayout()
+	m.applyFilter()
+
+	// Switch to Detailed
+	m.viewMode = TableViewDetailed
+	m.recalcLayout()
+	m.applyFilter()
+	_ = m.View()
+
+	// Switch back to Compact (this was the exact sequence that previously panicked!)
+	m.viewMode = TableViewCompact
+	m.recalcLayout()
+	m.applyFilter()
+	_ = m.View()
+
+	// Switch to Detailed again
+	m.viewMode = TableViewDetailed
+	m.recalcLayout()
+	m.applyFilter()
+	_ = m.View()
+}
+
+func TestFooterHintsAlwaysVisible(t *testing.T) {
+	m := NewModel(&dummyManager{}, initsys.TypeSystem)
+	m.width = 120
+	m.height = 40
+	m.statusMessage = "Sorted by CPU (▼)"
+
+	footer := m.renderFooter()
+
+	if !strings.Contains(footer, "Sorted by CPU (▼)") {
+		t.Errorf("footer should contain the status message")
+	}
+	if !strings.Contains(footer, "[V]") || !strings.Contains(footer, "[O/P]") || !strings.Contains(footer, "[S]") {
+		t.Errorf("footer must always contain key navigation hints, got: %s", footer)
 	}
 }

@@ -1261,7 +1261,9 @@ func (m *Model) renderDetails() string {
 	}
 	if len(info.Ports) > 0 {
 		portsBadge := lipgloss.NewStyle().Foreground(ColorActive).Bold(true).Render(strings.Join(info.Ports, ", "))
-		sb.WriteString(fmt.Sprintf("Ports:   %s\n", portsBadge))
+		sb.WriteString(fmt.Sprintf("Network: %s\n", portsBadge))
+	} else if info.PID > 0 {
+		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("No listening ports")))
 	}
 	if info.ConfigPath != "" {
 		sb.WriteString(fmt.Sprintf("Unit:    %s\n", info.ConfigPath))

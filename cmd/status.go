@@ -86,7 +86,9 @@ var statusCmd = &cobra.Command{
 				time.Since(info.ActiveSince).Round(time.Second)))
 		}
 		if len(info.Ports) > 0 {
-			lines = append(lines, fmt.Sprintf("Ports:       %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#00E676")).Bold(true).Render(strings.Join(info.Ports, ", "))))
+			lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#00E676")).Bold(true).Render(strings.Join(info.Ports, ", "))))
+		} else if info.PID > 0 {
+			lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Faint(true).Render("None (no open listening ports)")))
 		}
 		if info.ConfigPath != "" {
 			lines = append(lines, fmt.Sprintf("Unit File:   %s", info.ConfigPath))

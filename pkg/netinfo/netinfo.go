@@ -78,23 +78,44 @@ func IsPortInUse(port int, proto string) (bool, string) {
 }
 
 func getSocketInodesForPID(pid int) []uint64 {
-	fdDir := fmt.Sprintf("/proc/%d/fd", pid)
-	entries, err := os.ReadDir(fdDir)
-	if err != nil {
-		return nil
+	pids := []int{pid}
+
+	// Also discover child processes in /proc/<pid>/task/*/children
+	taskEntries, _ := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/children", pid))
+	for _, childFile := range taskEntries {
+		if data, err := os.ReadFile(childFile); err == nil {
+			for _, part := range strings.Fields(string(data)) {
+				if cpid, err := strconv.Atoi(part); err == nil {
+					pids = append(pids, cpid)
+				}
+			}
+		}
 	}
 
 	var inodes []uint64
-	for _, entry := range entries {
-		link, err := os.Readlink(filepath.Join(fdDir, entry.Name()))
+	seenInode := make(map[uint64]bool)
+
+	for _, p := range pids {
+		fdDir := fmt.Sprintf("/proc/%d/fd", p)
+		entries, err := os.ReadDir(fdDir)
 		if err != nil {
 			continue
 		}
 
-		if strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
-			inodeStr := link[8 : len(link)-1]
-			if inode, err := strconv.ParseUint(inodeStr, 10, 64); err == nil {
-				inodes = append(inodes, inode)
+		for _, entry := range entries {
+			link, err := os.Readlink(filepath.Join(fdDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+
+			if strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
+				inodeStr := link[8 : len(link)-1]
+				if inode, err := strconv.ParseUint(inodeStr, 10, 64); err == nil {
+					if !seenInode[inode] {
+						seenInode[inode] = true
+						inodes = append(inodes, inode)
+					}
+				}
 			}
 		}
 	}

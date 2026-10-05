@@ -1,7 +1,10 @@
 package netinfo
 
 import (
+	"net"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -26,8 +29,28 @@ func TestParseHexAddressIPv4(t *testing.T) {
 }
 
 func TestGetListeningPortsForPID(t *testing.T) {
+	// Start a local test listener
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot bind test port: %v", err)
+	}
+	defer ln.Close()
+
+	addr := ln.Addr().(*net.TCPAddr)
 	pid := os.Getpid()
-	// Test on self
+
 	ports := GetListeningPortsForPID(pid)
-	t.Logf("Self listening ports: %v", ports)
+	t.Logf("Self listening ports: %v (looking for :%d)", ports, addr.Port)
+
+	found := false
+	expected := strconv.Itoa(addr.Port)
+	for _, p := range ports {
+		if strings.Contains(p, expected) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected port %d in %v", addr.Port, ports)
+	}
 }

@@ -347,7 +347,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logLineMsg:
 		incoming := strings.Split(string(msg), "\n")
-		m.rawLogsLines = append(m.rawLogsLines, incoming...)
+		if len(m.rawLogsLines) == 1 && strings.HasPrefix(m.rawLogsLines[0], "Loading logs for") {
+			m.rawLogsLines = incoming
+		} else {
+			m.rawLogsLines = append(m.rawLogsLines, incoming...)
+		}
 		if len(m.rawLogsLines) > 500 {
 			m.rawLogsLines = m.rawLogsLines[len(m.rawLogsLines)-500:]
 		}
@@ -610,6 +614,14 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchMode = true
 			m.table.Blur()
 			m.searchInput.Focus()
+			return m, nil
+
+		case "f", "F", "ctrl+f":
+			// Dedicated log search shortcut usable from anywhere!
+			m.logSearchMode = true
+			m.focusPane = 1
+			m.table.Blur()
+			m.logSearchInput.Focus()
 			return m, nil
 
 		case "f4", "ctrl+e":
@@ -963,9 +975,16 @@ func (m *Model) renderDashboardView() string {
 
 	headerText := fmt.Sprintf(" Alirun (%s) | Scope: %s | View: %s | Sort: %s ", m.mgr.Name(), modeBadge, viewBadge, sortBadge)
 	if m.searchMode {
-		headerText += fmt.Sprintf(" | 🔍 %s  [Tab/Enter: Select, Esc: Clear]", m.searchInput.View())
-	} else if m.searchInput.Value() != "" {
-		headerText += fmt.Sprintf(" | 🔍 Filter: \"%s\"  [Esc: Clear, /: Edit]", m.searchInput.Value())
+		headerText += fmt.Sprintf(" | 🔍 Svc: %s  [Tab/Enter: Select, Esc: Clear]", m.searchInput.View())
+	} else if m.logSearchMode {
+		headerText += fmt.Sprintf(" | 🔍 Logs: %s  [Enter/Tab: Done, Esc: Clear]", m.logSearchInput.View())
+	} else {
+		if m.searchInput.Value() != "" {
+			headerText += fmt.Sprintf(" | 🔍 Svc: \"%s\"", m.searchInput.Value())
+		}
+		if m.logSearchInput.Value() != "" {
+			headerText += fmt.Sprintf(" | 🔍 Log: \"%s\"", m.logSearchInput.Value())
+		}
 	}
 	header := HeaderStyle.Width(m.width).Render(headerText)
 
@@ -1263,7 +1282,9 @@ func (m *Model) renderDetails() string {
 		portsBadge := lipgloss.NewStyle().Foreground(ColorActive).Bold(true).Render(strings.Join(info.Ports, ", "))
 		sb.WriteString(fmt.Sprintf("Network: %s\n", portsBadge))
 	} else if info.PID > 0 {
-		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("No listening ports")))
+		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("None (no listening ports)")))
+	} else {
+		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("Inactive (service stopped)")))
 	}
 	if info.ConfigPath != "" {
 		sb.WriteString(fmt.Sprintf("Unit:    %s\n", info.ConfigPath))
@@ -1298,10 +1319,10 @@ func (m *Model) renderFooter() string {
 		// Log pane focused hints
 		hints := []string{
 			KeyHintStyle.Render("[Space]") + " Pause/Live",
-			KeyHintStyle.Render("[L]") + " Priority Filter",
+			KeyHintStyle.Render("[L]") + " Filter Level",
 			KeyHintStyle.Render("[/]") + " Search Logs",
+			KeyHintStyle.Render("[Tab]") + " Focus Table",
 			KeyHintStyle.Render("[F4]") + " Edit Unit",
-			KeyHintStyle.Render("[Tab]") + " Table Focus",
 			KeyHintStyle.Render("[Q]") + "uit",
 		}
 		hintsLine = strings.Join(hints, "  ")
@@ -1321,19 +1342,17 @@ func (m *Model) renderFooter() string {
 			}
 		}
 
-		if m.width < 110 {
+		if m.width < 115 {
 			hints := []string{
 				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(newBtnLabel[:len(newBtnLabel)-1]) + " ",
 				KeyHintStyle.Render("[F4]") + "Edit",
 				KeyHintStyle.Render("[M]") + ":" + nextMgrLabel,
 				KeyHintStyle.Render("[V]") + "iew",
 				KeyHintStyle.Render("[O/P]") + "Sort",
-				KeyHintStyle.Render("[Tab]") + "Focus",
-				KeyHintStyle.Render("[S]") + "tart",
-				KeyHintStyle.Render("[X]") + "top",
-				KeyHintStyle.Render("[R]") + "estart",
-				KeyHintStyle.Render("[Del]") + "ete",
-				KeyHintStyle.Render("[/]") + "Search",
+				KeyHintStyle.Render("[Tab]") + "Logs",
+				KeyHintStyle.Render("[/]") + "SvcFind",
+				KeyHintStyle.Render("[F]") + "LogFind",
+				KeyHintStyle.Render("[L]") + "LogLevel",
 				KeyHintStyle.Render("[Q]") + "uit",
 			}
 			hintsLine = strings.Join(hints, "  ")
@@ -1344,15 +1363,14 @@ func (m *Model) renderFooter() string {
 				KeyHintStyle.Render("[M]") + "gr: " + nextMgrLabel,
 				KeyHintStyle.Render("[V]") + "iew",
 				KeyHintStyle.Render("[O/P]") + " Sort (1-6)",
-				KeyHintStyle.Render("[Tab]") + " Focus",
+				KeyHintStyle.Render("[Tab]") + " Logs",
+				KeyHintStyle.Render("[/]") + " Svc Find",
+				KeyHintStyle.Render("[F]") + " Log Find",
+				KeyHintStyle.Render("[L]") + " Log Level",
 				KeyHintStyle.Render("[S]") + "tart",
 				KeyHintStyle.Render("[X]") + "top",
 				KeyHintStyle.Render("[R]") + "estart",
-				KeyHintStyle.Render("[E]") + "nable",
-				KeyHintStyle.Render("[D]") + "isable",
 				KeyHintStyle.Render("[Del]") + "ete",
-				KeyHintStyle.Render("[U]") + "ser/Sys",
-				KeyHintStyle.Render("[/]") + "Search",
 				KeyHintStyle.Render("[Q]") + "uit",
 			}
 			hintsLine = strings.Join(hints, "  ")
@@ -1595,7 +1613,12 @@ func (m *Model) reapplyLogsFilter() {
 	}
 
 	if len(filtered) == 0 {
-		filtered = append(filtered, "(no logs matching current filter)")
+		levelNames := []string{"ALL", "WARN+ERR", "ERR"}
+		msg := fmt.Sprintf("(no logs matching filter [%s])", levelNames[m.logFilterLevel])
+		if searchQ != "" {
+			msg = fmt.Sprintf("(no logs matching filter [%s] and query %q)", levelNames[m.logFilterLevel], searchQ)
+		}
+		filtered = append(filtered, msg)
 	}
 
 	m.logsLines = filtered

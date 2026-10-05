@@ -10,15 +10,20 @@
 
 ### ✨ Key Features
 
-- **Automated Service Creation**: Turn any binary, Python/Node/Bash script, or arbitrary command line into a running systemd service in seconds.
+- **Automated Service & Timer Creation**:
+  - Turn any binary, Python/Node/Bash script, or arbitrary command line into a running systemd service in seconds.
+  - **Modern Cron Replacement**: First-class support for **Systemd Timers** (`--preset timer --schedule "15m"` / `"*-*-* 03:00:00"`) paired with oneshot services.
 - **Transparency First**:
-  - Live syntax-highlighted preview of generated `.service` files before touching disk.
+  - Live syntax-highlighted preview of generated `.service` and `.timer` files before touching disk.
   - Clear display of target paths (`~/.config/systemd/user/` or `/etc/systemd/system/`).
   - Option to open and customize units in `$EDITOR` (nano, vim, micro) prior to installation.
   - Explicit notification of executed system commands (`daemon-reload`, `enable --now`).
+- **Live Resource Metrics & Visual Gauges**:
+  - Real-time CPU% and RAM usage monitoring with Unicode sparkline graphs (` ▂▃▄▅▆▇█`) and progress gauges (`[████░░░░]`).
+  - Task/thread count and precise uptime tracking.
 - **Safe Non-Root by Default**: Services default to User scope (`~/.config/systemd/user/`), protecting system integrity without requiring `sudo`.
 - **Multi-Init Modular Architecture**: Abstracted via `initsys.Manager` interface. Primary provider: **Systemd**, with ready modular slots for **XDG Autostart**, **OpenRC**, and **Runit**.
-- **Interactive TUI Dashboard**: Split-screen view featuring a service table, details inspector (PID, memory, uptime), live `journalctl -f` log tailing, and an embedded `[N]ew Daemon` creation wizard.
+- **Interactive TUI Dashboard**: Split-screen view featuring a service table with timer indicators (`⏱`), details inspector with live metrics & sparklines, live `journalctl -f` log tailing, and an embedded `[N]ew Daemon` creation wizard.
 - **Effortless Updates**:
   - Built-in `alirun update` command for self-updating the binary directly from GitHub Releases.
   - `make update-deps` for updating all Go dependencies in one command.
@@ -96,15 +101,20 @@ alirun
 
 ### ✨ Ключевые особенности
 
-- **Автоматическое создание служб**: превращение любого бинарника, Python/Node/Bash скрипта или команды в службу systemd за пару секунд.
+- **Автоматическое создание служб и таймеров**:
+  - Превращение любого бинарника, Python/Node/Bash скрипта или команды в службу systemd за пару секунд.
+  - **Современная замена cron**: нативная поддержка **Systemd Timers** (`--preset timer --schedule "15m"` / `"*-*-* 03:00:00"`).
 - **Принцип абсолютной прозрачности (Transparency First)**:
-  - Предпросмотр сгенерированного `.service` файла с подсветкой синтаксиса перед записью на диск.
+  - Предпросмотр сгенерированных `.service` и `.timer` файлов с подсветкой синтаксиса перед записью на диск.
   - Наглядное указание путей (`~/.config/systemd/user/` или `/etc/systemd/system/`).
   - Возможность открыть конфиг в `$EDITOR` (nano, micro, vim) прямо перед сохранением.
   - Четкий список выполняемых системных команд (`daemon-reload`, `enable --now`).
+- **Мониторинг ресурсов и живые графики**:
+  - Отображение загрузки CPU% и памяти RAM в реальном времени с прогресс-барами (`[████░░░░]`) и Unicode-спарклайнами истории (` ▂▃▄▅▆▇█`).
+  - Подсчет задач/потоков (Tasks) и точное время непрерывной работы (Uptime).
 - **Безопасный User-Mode по умолчанию**: службы создаются без прав `root` / `sudo` в каталоге пользователя, защищая систему от случайных поломок.
 - **Мульти-инит архитектура**: ядро абстрагировано через интерфейс `initsys.Manager`. Основной модуль — **Systemd**, с готовой модульной структурой для **XDG Autostart**, **OpenRC** и **Runit**.
-- **Красивый TUI-дашборд**: раздельный экран с деревом служб, инспектором свойств (PID, память, аптайм), окном живых логов `journalctl -f` и встроенным мастером создания `[N]ew Daemon`.
+- **Красивый TUI-дашборд**: раздельный экран с деревом служб и таймеров (`⏱`), инспектором свойств с живыми графиками, окном живых логов `journalctl -f` и встроенным мастером создания `[N]ew Daemon`.
 - **Простота обновлений**:
   - Встроенная команда `alirun update` для самообновления бинарника из GitHub Releases.
   - Команда `make update-deps` для мгновенного обновления зависимостей проекта.
@@ -192,6 +202,7 @@ alirun/
 │   └── version.go            # Команды version и update
 ├── internal/tui/             # Полноэкранный TUI (Bubble Tea)
 │   ├── app.go                # Реактивная модель, стейт и цикл событий
+│   ├── metrics.go            # Мониторинг CPU%/RAM, спарклайны и прогресс-бары
 │   └── styles.go             # Цвета, границы и бейджи
 ├── pkg/
 │   ├── initsys/              # Модульное ядро мульти-инит систем

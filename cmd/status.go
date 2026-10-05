@@ -59,12 +59,26 @@ var statusCmd = &cobra.Command{
 		lines = append(lines, fmt.Sprintf("Status:      %s", statusStr))
 		lines = append(lines, fmt.Sprintf("Enabled:     %t", info.Enabled))
 
+		if info.IsTimer {
+			timerDesc := "Active"
+			if info.TimerNext != "" {
+				timerDesc = fmt.Sprintf("Active (Next: %s)", info.TimerNext)
+			}
+			lines = append(lines, fmt.Sprintf("Timer:       %s", timerDesc))
+		}
 		if info.PID > 0 {
 			lines = append(lines, fmt.Sprintf("Main PID:    %d", info.PID))
+		}
+		if info.TasksCurrent > 0 {
+			lines = append(lines, fmt.Sprintf("Tasks:       %d", info.TasksCurrent))
 		}
 		if info.MemoryBytes > 0 {
 			mb := float64(info.MemoryBytes) / (1024 * 1024)
 			lines = append(lines, fmt.Sprintf("Memory:      %.1f MB", mb))
+		}
+		if info.CPUUsageNSec > 0 {
+			cpuSec := float64(info.CPUUsageNSec) / 1e9
+			lines = append(lines, fmt.Sprintf("CPU Time:    %.2f s", cpuSec))
 		}
 		if !info.ActiveSince.IsZero() {
 			lines = append(lines, fmt.Sprintf("Active Since:%s (%s ago)",

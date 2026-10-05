@@ -4,6 +4,7 @@ import (
 	"alirun/pkg/detector"
 	"alirun/pkg/highlighter"
 	"alirun/pkg/initsys"
+	"alirun/pkg/initsys/systemd"
 	"context"
 	"fmt"
 	"os"
@@ -22,6 +23,7 @@ var (
 	flagCreateExec     string
 	flagCreateWorkDir  string
 	flagCreatePreset   string
+	flagCreateSchedule string
 	flagCreateSystem   bool
 	flagCreateNow      bool
 	flagCreateNonInter bool
@@ -196,6 +198,7 @@ var createCmd = &cobra.Command{
 							huh.NewOption("Background Daemon (Restart=always on failure)", "daemon"),
 							huh.NewOption("Web Service / API (Waits for network, Restart=always)", "web"),
 							huh.NewOption("One-shot Task (Runs once and terminates cleanly)", "oneshot"),
+							huh.NewOption("Scheduled Timer (Systemd .timer cron replacement)", "timer"),
 						).
 						Value(&presetChoice),
 
@@ -221,6 +224,33 @@ var createCmd = &cobra.Command{
 			}
 		}
 
+		scheduleVal := flagCreateSchedule
+		if presetChoice == "timer" {
+			if scheduleVal == "" && !flagCreateNonInter {
+				scheduleVal = "hourly"
+				timerForm := huh.NewForm(
+					huh.NewGroup(
+						huh.NewInput().
+							Title("Timer Schedule").
+							Description("Interval (e.g. 15m, 1h) or Systemd Calendar (hourly, daily, '*-*-* 03:00:00')").
+							Value(&scheduleVal).
+							Validate(func(s string) error {
+								if strings.TrimSpace(s) == "" {
+									return fmt.Errorf("schedule cannot be empty")
+								}
+								return nil
+							}),
+					),
+				)
+				if err := timerForm.Run(); err != nil {
+					return err
+				}
+			}
+			if scheduleVal == "" {
+				scheduleVal = "hourly"
+			}
+		}
+
 		// Prepare ServiceConfig
 		cfg := initsys.ServiceConfig{
 			Name:             name,
@@ -237,6 +267,9 @@ var createCmd = &cobra.Command{
 			cfg.WantsNetwork = true
 		case "oneshot":
 			cfg.Preset = initsys.PresetOneshot
+		case "timer":
+			cfg.Preset = initsys.PresetTimer
+			cfg.TimerSchedule = scheduleVal
 		default:
 			cfg.Preset = initsys.PresetDaemon
 		}
@@ -255,6 +288,16 @@ var createCmd = &cobra.Command{
 
 		// Highlight configuration
 		fmt.Println(highlighter.HighlightUnit(content))
+
+		if cfg.Preset == initsys.PresetTimer {
+			timerContent, err := systemd.GenerateTimerFile(cfg)
+			if err == nil {
+				timerDestPath := strings.TrimSuffix(destPath, ".service") + ".timer"
+				fmt.Println("\n" + bannerStyle.Render(" Transparency Preview: Generated Timer Unit (.timer) "))
+				fmt.Printf("Destination File: %s\n\n", lipgloss.NewStyle().Bold(true).Render(timerDestPath))
+				fmt.Println(highlighter.HighlightUnit(timerContent))
+			}
+		}
 
 		var actionChoice = "start"
 		if !flagCreateNonInter {
@@ -358,7 +401,8 @@ func init() {
 	createCmd.Flags().StringVar(&flagCreateDesc, "desc", "", "Description")
 	createCmd.Flags().StringVar(&flagCreateExec, "exec", "", "ExecStart command line")
 	createCmd.Flags().StringVar(&flagCreateWorkDir, "workdir", "", "Working directory")
-	createCmd.Flags().StringVar(&flagCreatePreset, "preset", "daemon", "Preset: daemon, web, oneshot")
+	createCmd.Flags().StringVar(&flagCreatePreset, "preset", "daemon", "Preset: daemon, web, oneshot, timer")
+	createCmd.Flags().StringVar(&flagCreateSchedule, "schedule", "", "Schedule for timer preset (e.g. 'hourly', 'daily', '15m', '*-*-* 03:00:00')")
 	createCmd.Flags().BoolVar(&flagCreateSystem, "system", false, "Install as system service (default: user service)")
 	createCmd.Flags().BoolVar(&flagCreateNow, "now", true, "Enable and start immediately")
 	createCmd.Flags().BoolVar(&flagCreateNonInter, "non-interactive", false, "Do not prompt interactively")

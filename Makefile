@@ -25,7 +25,7 @@ build:
 
 test:
 	@echo "🧪 Running tests..."
-	go test -v ./pkg/...
+	go test -v ./...
 
 fmt:
 	@echo "🖌️ Formatting code..."

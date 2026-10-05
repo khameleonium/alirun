@@ -38,6 +38,8 @@ func GenerateUnitFile(cfg initsys.ServiceConfig) (string, error) {
 	case initsys.PresetOneshot:
 		opts = append(opts, unit.NewUnitOption("Service", "Type", "oneshot"))
 		opts = append(opts, unit.NewUnitOption("Service", "RemainAfterExit", "yes"))
+	case initsys.PresetTimer:
+		opts = append(opts, unit.NewUnitOption("Service", "Type", "oneshot"))
 	default:
 		opts = append(opts, unit.NewUnitOption("Service", "Type", "simple"))
 	}
@@ -56,7 +58,7 @@ func GenerateUnitFile(cfg initsys.ServiceConfig) (string, error) {
 		}
 	}
 
-	if restartPolicy != "" && cfg.Preset != initsys.PresetOneshot {
+	if restartPolicy != "" && cfg.Preset != initsys.PresetOneshot && cfg.Preset != initsys.PresetTimer {
 		opts = append(opts, unit.NewUnitOption("Service", "Restart", restartPolicy))
 		sec := cfg.RestartSec
 		if sec <= 0 {
@@ -89,16 +91,52 @@ func GenerateUnitFile(cfg initsys.ServiceConfig) (string, error) {
 	opts = append(opts, unit.NewUnitOption("Service", "StandardError", "journal"))
 
 	// --- [Install] Section ---
-	wantedBy := "default.target"
-	if cfg.Type == initsys.TypeSystem {
-		wantedBy = "multi-user.target"
+	if cfg.Preset != initsys.PresetTimer {
+		wantedBy := "default.target"
+		if cfg.Type == initsys.TypeSystem {
+			wantedBy = "multi-user.target"
+		}
+		opts = append(opts, unit.NewUnitOption("Install", "WantedBy", wantedBy))
 	}
-	opts = append(opts, unit.NewUnitOption("Install", "WantedBy", wantedBy))
 
 	reader := unit.Serialize(opts)
 	buf, err := io.ReadAll(reader)
 	if err != nil {
 		return "", fmt.Errorf("failed to serialize unit: %w", err)
+	}
+
+	return string(buf), nil
+}
+
+// GenerateTimerFile generates valid systemd .timer unit content
+func GenerateTimerFile(cfg initsys.ServiceConfig) (string, error) {
+	if strings.TrimSpace(cfg.Name) == "" {
+		return "", fmt.Errorf("timer service name cannot be empty")
+	}
+
+	schedule := strings.TrimSpace(cfg.TimerSchedule)
+	if schedule == "" {
+		schedule = "hourly"
+	}
+
+	var opts []*unit.UnitOption
+	opts = append(opts, unit.NewUnitOption("Unit", "Description", fmt.Sprintf("Timer for %s (managed by Alirun)", cfg.Name)))
+
+	// Check if schedule is interval (e.g. "15m", "1h") or calendar
+	if strings.HasSuffix(schedule, "s") || strings.HasSuffix(schedule, "m") || strings.HasSuffix(schedule, "h") {
+		opts = append(opts, unit.NewUnitOption("Timer", "OnUnitActiveSec", schedule))
+		opts = append(opts, unit.NewUnitOption("Timer", "OnBootSec", "1m"))
+	} else {
+		opts = append(opts, unit.NewUnitOption("Timer", "OnCalendar", schedule))
+	}
+
+	opts = append(opts, unit.NewUnitOption("Timer", "Persistent", "true"))
+	opts = append(opts, unit.NewUnitOption("Install", "WantedBy", "timers.target"))
+
+	reader := unit.Serialize(opts)
+	buf, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize timer: %w", err)
 	}
 
 	return string(buf), nil

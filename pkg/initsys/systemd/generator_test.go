@@ -70,3 +70,32 @@ func TestGenerateUnitFileOneshot(t *testing.T) {
 		t.Errorf("expected WantedBy=multi-user.target for system service")
 	}
 }
+
+func TestGenerateTimerFile(t *testing.T) {
+	cfg := initsys.ServiceConfig{
+		Name:          "cleanup-task",
+		TimerSchedule: "*-*-* 03:00:00",
+		Preset:        initsys.PresetTimer,
+	}
+
+	timerContent, err := GenerateTimerFile(cfg)
+	if err != nil {
+		t.Fatalf("GenerateTimerFile failed: %v", err)
+	}
+
+	expected := []string{
+		"[Unit]",
+		"Description=Timer for cleanup-task (managed by Alirun)",
+		"[Timer]",
+		"OnCalendar=*-*-* 03:00:00",
+		"Persistent=true",
+		"[Install]",
+		"WantedBy=timers.target",
+	}
+
+	for _, exp := range expected {
+		if !strings.Contains(timerContent, exp) {
+			t.Errorf("timer missing expected line %q\nFull content:\n%s", exp, timerContent)
+		}
+	}
+}

@@ -30,6 +30,7 @@ const (
 	PresetDaemon  PresetType = "daemon"  // Persistent background service (Restart=always)
 	PresetOneshot PresetType = "oneshot" // Executes once and terminates (Type=oneshot)
 	PresetWeb     PresetType = "web"     // Web service / server (After=network-online.target)
+	PresetTimer   PresetType = "timer"   // Scheduled timer execution (service + timer)
 )
 
 // ServiceInfo holds normalized status information about any service
@@ -40,12 +41,16 @@ type ServiceInfo struct {
 	Status      ServiceStatus `json:"status"`
 	SubState    string        `json:"sub_state"`
 	Enabled     bool          `json:"enabled"`
-	PID         int           `json:"pid"`
-	MemoryBytes uint64        `json:"memory_bytes"`
-	ConfigPath  string        `json:"config_path"`
-	ExecPath    string        `json:"exec_path"`
-	ActiveSince time.Time     `json:"active_since"`
-	InitSystem  string        `json:"init_system"`
+	PID          int           `json:"pid"`
+	MemoryBytes  uint64        `json:"memory_bytes"`
+	CPUUsageNSec uint64        `json:"cpu_usage_nsec"`
+	TasksCurrent uint64        `json:"tasks_current"`
+	IsTimer      bool          `json:"is_timer"`
+	TimerNext    string        `json:"timer_next"`
+	ConfigPath   string        `json:"config_path"`
+	ExecPath     string        `json:"exec_path"`
+	ActiveSince  time.Time     `json:"active_since"`
+	InitSystem   string        `json:"init_system"`
 }
 
 // ServiceConfig contains user inputs to generate a new service configuration
@@ -61,6 +66,8 @@ type ServiceConfig struct {
 	Preset           PresetType        `json:"preset"`
 	Type             ServiceType       `json:"type"`
 	WantsNetwork     bool              `json:"wants_network"`
+	TimerSchedule    string            `json:"timer_schedule"`
+	TimerPersistent  bool              `json:"timer_persistent"`
 }
 
 // Manager is the abstract interface implemented by all init system providers

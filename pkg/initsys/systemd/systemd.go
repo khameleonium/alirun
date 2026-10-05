@@ -82,6 +82,8 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 		return nil, err
 	}
 
+	timersMap := m.getActiveTimersMap(ctx, sType)
+
 	var results []initsys.ServiceInfo
 	for _, u := range unitStatuses {
 		if !strings.HasSuffix(u.Name, ".service") {
@@ -89,7 +91,7 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 		}
 
 		status := mapActiveState(u.ActiveState)
-		results = append(results, initsys.ServiceInfo{
+		svc := initsys.ServiceInfo{
 			Name:        strings.TrimSuffix(u.Name, ".service"),
 			Description: u.Description,
 			Type:        sType,
@@ -97,10 +99,45 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 			SubState:    u.SubState,
 			InitSystem:  "systemd",
 			ConfigPath:  m.GetConfigPath(u.Name, sType),
-		})
+		}
+		if next, ok := timersMap[svc.Name]; ok {
+			svc.IsTimer = true
+			svc.TimerNext = next
+		}
+		results = append(results, svc)
 	}
 
 	return results, nil
+}
+
+func (m *Manager) getActiveTimersMap(ctx context.Context, sType initsys.ServiceType) map[string]string {
+	timerMap := make(map[string]string)
+	args := []string{"list-timers", "--no-legend", "--full"}
+	if sType == initsys.TypeUser {
+		args = append([]string{"--user"}, args...)
+	}
+	out, err := exec.CommandContext(ctx, "systemctl", args...).Output()
+	if err != nil {
+		return timerMap
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			activatedUnit := fields[len(fields)-1]
+			svcName := strings.TrimSuffix(activatedUnit, ".service")
+			nextTrigger := fields[0]
+			if len(fields) >= 5 {
+				nextTrigger = fmt.Sprintf("%s %s %s (%s left)", fields[0], fields[1], fields[2], fields[4])
+			}
+			timerMap[svcName] = nextTrigger
+		}
+	}
+	return timerMap
 }
 
 func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]initsys.ServiceInfo, error) {
@@ -114,6 +151,8 @@ func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]
 	if err != nil {
 		return nil, fmt.Errorf("systemctl list-units failed: %w", err)
 	}
+
+	timersMap := m.getActiveTimersMap(ctx, sType)
 
 	var results []initsys.ServiceInfo
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
@@ -139,7 +178,7 @@ func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]
 			desc = strings.Join(fields[4:], " ")
 		}
 
-		results = append(results, initsys.ServiceInfo{
+		svc := initsys.ServiceInfo{
 			Name:        strings.TrimSuffix(unitFile, ".service"),
 			Description: desc,
 			Type:        sType,
@@ -147,7 +186,12 @@ func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]
 			SubState:    subState,
 			InitSystem:  "systemd",
 			ConfigPath:  m.GetConfigPath(unitFile, sType),
-		})
+		}
+		if next, ok := timersMap[svc.Name]; ok {
+			svc.IsTimer = true
+			svc.TimerNext = next
+		}
+		results = append(results, svc)
 	}
 
 	return results, nil
@@ -164,6 +208,8 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 		"-p", "UnitFileState",
 		"-p", "MainPID",
 		"-p", "MemoryCurrent",
+		"-p", "CPUUsageNSec",
+		"-p", "TasksCurrent",
 		"-p", "FragmentPath",
 		"-p", "ExecStart",
 		"-p", "ActiveEnterTimestamp",
@@ -211,6 +257,14 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 			if mem, err := strconv.ParseUint(val, 10, 64); err == nil && mem < 18446744073709551615 {
 				info.MemoryBytes = mem
 			}
+		case "CPUUsageNSec":
+			if cpu, err := strconv.ParseUint(val, 10, 64); err == nil && cpu < 18446744073709551615 {
+				info.CPUUsageNSec = cpu
+			}
+		case "TasksCurrent":
+			if tasks, err := strconv.ParseUint(val, 10, 64); err == nil && tasks < 18446744073709551615 {
+				info.TasksCurrent = tasks
+			}
 		case "FragmentPath":
 			if val != "" {
 				info.ConfigPath = val
@@ -220,6 +274,28 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 		case "ActiveEnterTimestamp":
 			if t, err := time.Parse("Mon 2006-01-02 15:04:05 MST", val); err == nil {
 				info.ActiveSince = t
+			}
+		}
+	}
+
+	// Check if a timer exists or is active for this service
+	timerPath := m.GetTimerConfigPath(name, sType)
+	if _, err := os.Stat(timerPath); err == nil {
+		info.IsTimer = true
+	}
+
+	timerName := strings.TrimSuffix(unitName, ".service") + ".timer"
+	timerArgs := []string{"list-timers", "--no-legend", "--full", timerName}
+	if sType == initsys.TypeUser {
+		timerArgs = append([]string{"--user"}, timerArgs...)
+	}
+	if timerOut, err := exec.CommandContext(ctx, "systemctl", timerArgs...).Output(); err == nil {
+		timerText := strings.TrimSpace(string(timerOut))
+		if timerText != "" {
+			info.IsTimer = true
+			fields := strings.Fields(timerText)
+			if len(fields) >= 5 {
+				info.TimerNext = fmt.Sprintf("%s %s %s (%s left)", fields[0], fields[1], fields[2], fields[4])
 			}
 		}
 	}
@@ -251,6 +327,22 @@ func (m *Manager) GenerateConfig(cfg initsys.ServiceConfig) (string, error) {
 	return GenerateUnitFile(cfg)
 }
 
+func (m *Manager) GetTimerConfigPath(name string, sType initsys.ServiceType) string {
+	timerName := strings.TrimSuffix(name, ".service")
+	if !strings.HasSuffix(timerName, ".timer") {
+		timerName += ".timer"
+	}
+	if sType == initsys.TypeSystem {
+		return filepath.Join("/etc/systemd/system", timerName)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
+	return filepath.Join(home, ".config", "systemd", "user", timerName)
+}
+
 func (m *Manager) InstallService(ctx context.Context, cfg initsys.ServiceConfig, content string, enableNow bool) (string, error) {
 	unitPath := m.GetConfigPath(cfg.Name, cfg.Type)
 
@@ -265,15 +357,31 @@ func (m *Manager) InstallService(ctx context.Context, cfg initsys.ServiceConfig,
 		return "", fmt.Errorf("failed to write unit file %s: %w", unitPath, err)
 	}
 
+	// If timer preset, also generate and write the corresponding .timer unit
+	if cfg.Preset == initsys.PresetTimer {
+		timerPath := m.GetTimerConfigPath(cfg.Name, cfg.Type)
+		timerContent, err := GenerateTimerFile(cfg)
+		if err == nil {
+			_ = os.WriteFile(timerPath, []byte(timerContent), 0644)
+		}
+	}
+
 	// Daemon-reload
 	if err := m.runSystemctl(ctx, cfg.Type, "daemon-reload"); err != nil {
 		return unitPath, fmt.Errorf("service written, but daemon-reload failed: %w", err)
 	}
 
 	if enableNow {
-		unitName := ensureServiceSuffix(cfg.Name)
-		if err := m.runSystemctl(ctx, cfg.Type, "enable", "--now", unitName); err != nil {
-			return unitPath, fmt.Errorf("service created, but failed to enable --now: %w", err)
+		if cfg.Preset == initsys.PresetTimer {
+			timerName := strings.TrimSuffix(cfg.Name, ".service") + ".timer"
+			if err := m.runSystemctl(ctx, cfg.Type, "enable", "--now", timerName); err != nil {
+				return unitPath, fmt.Errorf("timer created, but failed to enable --now: %w", err)
+			}
+		} else {
+			unitName := ensureServiceSuffix(cfg.Name)
+			if err := m.runSystemctl(ctx, cfg.Type, "enable", "--now", unitName); err != nil {
+				return unitPath, fmt.Errorf("service created, but failed to enable --now: %w", err)
+			}
 		}
 	}
 
@@ -283,6 +391,15 @@ func (m *Manager) InstallService(ctx context.Context, cfg initsys.ServiceConfig,
 func (m *Manager) DeleteService(ctx context.Context, name string, sType initsys.ServiceType) error {
 	unitName := ensureServiceSuffix(name)
 	unitPath := m.GetConfigPath(name, sType)
+	timerPath := m.GetTimerConfigPath(name, sType)
+
+	// If timer exists, stop and disable it
+	if _, err := os.Stat(timerPath); err == nil {
+		timerName := strings.TrimSuffix(name, ".service") + ".timer"
+		_ = m.runSystemctl(ctx, sType, "stop", timerName)
+		_ = m.runSystemctl(ctx, sType, "disable", timerName)
+		_ = os.Remove(timerPath)
+	}
 
 	// Stop and disable (ignore error if already stopped/disabled)
 	_ = m.runSystemctl(ctx, sType, "stop", unitName)

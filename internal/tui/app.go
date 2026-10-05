@@ -3,6 +3,7 @@ package tui
 import (
 	"alirun/pkg/highlighter"
 	"alirun/pkg/initsys"
+	"alirun/pkg/initsys/systemd"
 	"context"
 	"fmt"
 	"os"
@@ -72,14 +73,18 @@ type Model struct {
 
 	logCancel context.CancelFunc
 
+	// Real-time metrics
+	metricHistory map[string]*ServiceMetrics
+
 	// Wizard components
 	wName       textinput.Model
 	wDesc       textinput.Model
 	wExec       textinput.Model
 	wWorkDir    textinput.Model
-	wPreset     int // 0 = Daemon, 1 = Web Server, 2 = One-shot Task
+	wSchedule   textinput.Model
+	wPreset     int // 0 = Daemon, 1 = Web Server, 2 = One-shot Task, 3 = Scheduled Timer
 	wScope      initsys.ServiceType
-	wFocusField int // 0: Name, 1: Desc, 2: Exec, 3: WorkDir, 4: Preset, 5: Scope, 6: [Save & Start], 7: [Cancel]
+	wFocusField int // Field index in wizard
 	wError      string
 }
 
@@ -87,7 +92,7 @@ type Model struct {
 func NewModel(mgr initsys.Manager, sType initsys.ServiceType) *Model {
 	// Initialize table
 	columns := []table.Column{
-		{Title: "ST", Width: 4},
+		{Title: "ST", Width: 5},
 		{Title: "SERVICE", Width: 26},
 		{Title: "STATE", Width: 10},
 	}
@@ -120,13 +125,14 @@ func NewModel(mgr initsys.Manager, sType initsys.ServiceType) *Model {
 	vp.SetContent("Waiting for service logs...")
 
 	m := &Model{
-		mgr:          mgr,
-		sType:        sType,
-		viewState:    ViewStateDashboard,
-		table:        t,
-		logsViewport: vp,
-		searchInput:  ti,
-		focusPane:    0,
+		mgr:           mgr,
+		sType:         sType,
+		viewState:     ViewStateDashboard,
+		table:         t,
+		logsViewport:  vp,
+		searchInput:   ti,
+		focusPane:     0,
+		metricHistory: make(map[string]*ServiceMetrics),
 	}
 
 	m.initWizardInputs()
@@ -152,6 +158,11 @@ func (m *Model) initWizardInputs() {
 	m.wWorkDir.SetValue(cwd)
 	m.wWorkDir.CharLimit = 150
 
+	m.wSchedule = textinput.New()
+	m.wSchedule.Placeholder = "e.g. hourly, daily, 15m, *-*-* 03:00:00"
+	m.wSchedule.SetValue("hourly")
+	m.wSchedule.CharLimit = 80
+
 	m.wPreset = 0 // Daemon
 	m.wScope = m.sType
 	m.wFocusField = 0
@@ -162,8 +173,21 @@ func (m *Model) initWizardInputs() {
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadServicesCmd(),
+		tickCmd(),
 		tea.EnterAltScreen,
 	)
+}
+
+func (m *Model) recordMetricSample(info *initsys.ServiceInfo) {
+	if info == nil {
+		return
+	}
+	metrics, ok := m.metricHistory[info.Name]
+	if !ok {
+		metrics = &ServiceMetrics{}
+		m.metricHistory[info.Name] = metrics
+	}
+	metrics.AddSample(info.CPUUsageNSec, info.MemoryBytes, time.Now())
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -173,6 +197,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.recalcLayout()
 		return m, nil
+
+	case tickMsg:
+		var cmd tea.Cmd
+		if m.viewState == ViewStateDashboard && m.selectedDetail != nil {
+			cmd = m.loadSelectedDetailCmd()
+		}
+		return m, tea.Batch(cmd, tickCmd())
 
 	case servicesLoadedMsg:
 		if msg.err != nil {
@@ -190,6 +221,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case serviceDetailMsg:
 		if msg.err == nil && msg.detail != nil {
 			m.selectedDetail = msg.detail
+			m.recordMetricSample(msg.detail)
 		}
 		return m, nil
 
@@ -402,6 +434,15 @@ func (m *Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	totalFields := 8
+	if m.wPreset == 3 {
+		totalFields = 9
+	}
+
+	isScopeField := (m.wPreset == 3 && m.wFocusField == 6) || (m.wPreset != 3 && m.wFocusField == 5)
+	isSaveField := (m.wPreset == 3 && m.wFocusField == 7) || (m.wPreset != 3 && m.wFocusField == 6)
+	isCancelField := (m.wPreset == 3 && m.wFocusField == 8) || (m.wPreset != 3 && m.wFocusField == 7)
+
 	switch keyMsg.String() {
 	case "esc":
 		// Return to dashboard
@@ -409,22 +450,26 @@ func (m *Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab", "down":
-		m.wFocusField = (m.wFocusField + 1) % 8
+		m.wFocusField = (m.wFocusField + 1) % totalFields
 		m.syncWizardFocus()
 		return m, nil
 
 	case "shift+tab", "up":
-		m.wFocusField = (m.wFocusField + 7) % 8
+		m.wFocusField = (m.wFocusField + totalFields - 1) % totalFields
 		m.syncWizardFocus()
 		return m, nil
 
 	case " ":
 		// Space toggles preset or scope if focused on them
 		if m.wFocusField == 4 {
-			m.wPreset = (m.wPreset + 1) % 3
+			m.wPreset = (m.wPreset + 1) % 4
+			if m.wPreset != 3 && m.wFocusField >= 8 {
+				m.wFocusField = 7
+			}
+			m.syncWizardFocus()
 			return m, nil
 		}
-		if m.wFocusField == 5 {
+		if isScopeField {
 			if m.wScope == initsys.TypeUser {
 				m.wScope = initsys.TypeSystem
 			} else {
@@ -434,16 +479,16 @@ func (m *Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter":
-		if m.wFocusField == 6 || (m.wFocusField < 4 && m.wName.Value() != "" && m.wExec.Value() != "") {
+		if isSaveField || (m.wFocusField < 4 && m.wName.Value() != "" && m.wExec.Value() != "") {
 			// Submit form and create daemon!
 			return m, m.submitWizard(true)
 		}
-		if m.wFocusField == 7 {
+		if isCancelField {
 			m.viewState = ViewStateDashboard
 			return m, nil
 		}
 		// Move to next field on Enter in inputs
-		m.wFocusField = (m.wFocusField + 1) % 8
+		m.wFocusField = (m.wFocusField + 1) % totalFields
 		m.syncWizardFocus()
 		return m, nil
 	}
@@ -459,6 +504,10 @@ func (m *Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wExec, cmd = m.wExec.Update(msg)
 	case 3:
 		m.wWorkDir, cmd = m.wWorkDir.Update(msg)
+	case 5:
+		if m.wPreset == 3 {
+			m.wSchedule, cmd = m.wSchedule.Update(msg)
+		}
 	}
 
 	return m, cmd
@@ -469,6 +518,7 @@ func (m *Model) syncWizardFocus() {
 	m.wDesc.Blur()
 	m.wExec.Blur()
 	m.wWorkDir.Blur()
+	m.wSchedule.Blur()
 
 	switch m.wFocusField {
 	case 0:
@@ -479,6 +529,10 @@ func (m *Model) syncWizardFocus() {
 		m.wExec.Focus()
 	case 3:
 		m.wWorkDir.Focus()
+	case 5:
+		if m.wPreset == 3 {
+			m.wSchedule.Focus()
+		}
 	}
 }
 
@@ -512,6 +566,13 @@ func (m *Model) generateWizardConfig() (initsys.ServiceConfig, string, error) {
 		cfg.WantsNetwork = true
 	case 2:
 		cfg.Preset = initsys.PresetOneshot
+	case 3:
+		cfg.Preset = initsys.PresetTimer
+		sched := strings.TrimSpace(m.wSchedule.Value())
+		if sched == "" {
+			sched = "hourly"
+		}
+		cfg.TimerSchedule = sched
 	default:
 		cfg.Preset = initsys.PresetDaemon
 	}
@@ -680,7 +741,7 @@ func (m *Model) renderWizardView() string {
 	formLines = append(formLines, renderField(3, "Working Directory", "execution directory", m.wWorkDir.View()))
 
 	// Preset selector
-	presetNames := []string{"Daemon (Restart=always)", "Web Server / API (network-online)", "One-shot Task (runs once)"}
+	presetNames := []string{"Daemon (Restart=always)", "Web Server / API (network-online)", "One-shot Task (runs once)", "Scheduled Timer (Cron replacement)"}
 	presetBadge := fmt.Sprintf("[%s]  (press Space to cycle)", presetNames[m.wPreset])
 	presetStyle := lipgloss.NewStyle()
 	if m.wFocusField == 4 {
@@ -688,24 +749,37 @@ func (m *Model) renderWizardView() string {
 	}
 	formLines = append(formLines, presetStyle.Render("▶ Execution Preset: ")+presetBadge+"\n")
 
+	if m.wPreset == 3 {
+		formLines = append(formLines, renderField(5, "Timer Schedule", "hourly, daily, 15m, *-*-* 03:00:00", m.wSchedule.View()))
+	}
+
+	scopeIndex := 5
+	saveIndex := 6
+	cancelIndex := 7
+	if m.wPreset == 3 {
+		scopeIndex = 6
+		saveIndex = 7
+		cancelIndex = 8
+	}
+
 	// Scope selector
 	scopeBadge := fmt.Sprintf("[%s]  (press Space to toggle)", strings.ToUpper(string(m.wScope)))
 	scopeStyle := lipgloss.NewStyle()
-	if m.wFocusField == 5 {
+	if m.wFocusField == scopeIndex {
 		scopeStyle = scopeStyle.Bold(true).Foreground(ColorActive)
 	}
 	formLines = append(formLines, scopeStyle.Render("▶ Target Scope: ")+scopeBadge+"\n")
 
 	// Buttons
 	btnStart := "[ Save & Start Daemon Now ]"
-	if m.wFocusField == 6 {
+	if m.wFocusField == saveIndex {
 		btnStart = lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(btnStart)
 	} else {
 		btnStart = lipgloss.NewStyle().Bold(true).Foreground(ColorActive).Render(btnStart)
 	}
 
 	btnCancel := "[ Cancel ]"
-	if m.wFocusField == 7 {
+	if m.wFocusField == cancelIndex {
 		btnCancel = lipgloss.NewStyle().Bold(true).Background(ColorFailed).Foreground(lipgloss.Color("#FFFFFF")).Render(btnCancel)
 	} else {
 		btnCancel = lipgloss.NewStyle().Faint(true).Render(btnCancel)
@@ -733,6 +807,20 @@ func (m *Model) renderWizardView() string {
 		lipgloss.NewStyle().Bold(true).Render(destPath),
 		highlightedUnit,
 	)
+
+	if m.wPreset == 3 {
+		cfg, _, _ := m.generateWizardConfig()
+		timerContent, err := systemd.GenerateTimerFile(cfg)
+		if err == nil {
+			timerPath := strings.TrimSuffix(destPath, ".service") + ".timer"
+			rightContent += fmt.Sprintf("\n\n%s\n%s: %s\n\n%s",
+				lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render("Live Unit Preview (.timer)"),
+				lipgloss.NewStyle().Faint(true).Render("Destination"),
+				lipgloss.NewStyle().Bold(true).Render(timerPath),
+				highlighter.HighlightUnit(timerContent),
+			)
+		}
+	}
 
 	rightBox := PaneBaseStyle.
 		Width(rightWidth).
@@ -773,15 +861,51 @@ func (m *Model) renderDetails() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render(info.Name)
 	sb.WriteString(fmt.Sprintf("%s  [%s]  Enabled: %t\n", title, statusBadge, info.Enabled))
 
+	if info.IsTimer {
+		timerInfo := "Active"
+		if info.TimerNext != "" {
+			timerInfo = fmt.Sprintf("Active (Next: %s)", info.TimerNext)
+		}
+		timerBadge := lipgloss.NewStyle().Foreground(ColorWarning).Bold(true).Render("⏱ " + timerInfo)
+		sb.WriteString(fmt.Sprintf("Timer:   %s\n", timerBadge))
+	}
+
 	if info.Description != "" {
 		sb.WriteString(fmt.Sprintf("Desc:    %s\n", info.Description))
 	}
 	if info.PID > 0 {
-		sb.WriteString(fmt.Sprintf("PID:     %d\n", info.PID))
+		tasksStr := ""
+		if info.TasksCurrent > 0 {
+			tasksStr = fmt.Sprintf("  (Tasks: %d)", info.TasksCurrent)
+		}
+		sb.WriteString(fmt.Sprintf("PID:     %d%s\n", info.PID, tasksStr))
 	}
-	if info.MemoryBytes > 0 {
+
+	// Live Metrics & Sparklines
+	metrics := m.metricHistory[info.Name]
+	if metrics != nil && (info.MemoryBytes > 0 || info.CPUUsageNSec > 0) {
+		// CPU Row
+		cpuPct := metrics.LastCPUPercent
+		cpuBar := RenderProgressBar(cpuPct, 10, ColorActive)
+		cpuSpark := RenderSparkline(metrics.CPUHistory, ColorActive)
+		sb.WriteString(fmt.Sprintf("CPU:     %s %5.1f%%  %s\n", cpuBar, cpuPct, cpuSpark))
+
+		// RAM Row
+		ramMB := metrics.LastRAMMB
+		ramPct := (ramMB / 512.0) * 100.0
+		if ramPct > 100 {
+			ramPct = 100
+		}
+		ramBar := RenderProgressBar(ramPct, 10, ColorSecondary)
+		ramSpark := RenderSparkline(metrics.RAMHistory, ColorSecondary)
+		sb.WriteString(fmt.Sprintf("RAM:     %s %5.1f MB %s\n", ramBar, ramMB, ramSpark))
+	} else if info.MemoryBytes > 0 {
 		mb := float64(info.MemoryBytes) / (1024 * 1024)
 		sb.WriteString(fmt.Sprintf("Memory:  %.1f MB\n", mb))
+	}
+
+	if !info.ActiveSince.IsZero() {
+		sb.WriteString(fmt.Sprintf("Uptime:  %s\n", time.Since(info.ActiveSince).Round(time.Second)))
 	}
 	if info.ConfigPath != "" {
 		sb.WriteString(fmt.Sprintf("Unit:    %s\n", info.ConfigPath))
@@ -863,13 +987,24 @@ func (m *Model) applyFilter() {
 		}
 
 		var stIcon string
-		switch s.Status {
-		case initsys.StatusActive:
-			stIcon = "●"
-		case initsys.StatusFailed:
-			stIcon = "✖"
-		default:
-			stIcon = "○"
+		if s.IsTimer {
+			switch s.Status {
+			case initsys.StatusActive:
+				stIcon = "⏱ ●"
+			case initsys.StatusFailed:
+				stIcon = "⏱ ✖"
+			default:
+				stIcon = "⏱ ○"
+			}
+		} else {
+			switch s.Status {
+			case initsys.StatusActive:
+				stIcon = "●"
+			case initsys.StatusFailed:
+				stIcon = "✖"
+			default:
+				stIcon = "○"
+			}
 		}
 
 		rows = append(rows, table.Row{

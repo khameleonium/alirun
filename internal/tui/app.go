@@ -76,6 +76,11 @@ type Model struct {
 	// Real-time metrics
 	metricHistory map[string]*ServiceMetrics
 
+	// View & Sort modes
+	viewMode  TableViewMode
+	sortField SortField
+	sortDir   SortDirection
+
 	// Wizard components
 	wName       textinput.Model
 	wDesc       textinput.Model
@@ -128,6 +133,9 @@ func NewModel(mgr initsys.Manager, sType initsys.ServiceType) *Model {
 		mgr:           mgr,
 		sType:         sType,
 		viewState:     ViewStateDashboard,
+		viewMode:      TableViewCompact,
+		sortField:     SortByName,
+		sortDir:       SortAsc,
 		table:         t,
 		logsViewport:  vp,
 		searchInput:   ti,
@@ -137,6 +145,26 @@ func NewModel(mgr initsys.Manager, sType initsys.ServiceType) *Model {
 
 	m.initWizardInputs()
 	return m
+}
+
+func (m *Model) updateTableColumns() {
+	if m.viewMode == TableViewDetailed {
+		m.table.SetColumns([]table.Column{
+			{Title: "ST", Width: 5},
+			{Title: "SERVICE", Width: 20},
+			{Title: "STATE", Width: 9},
+			{Title: "CPU", Width: 8},
+			{Title: "RAM", Width: 9},
+			{Title: "UPTIME", Width: 8},
+			{Title: "PID", Width: 7},
+		})
+	} else {
+		m.table.SetColumns([]table.Column{
+			{Title: "ST", Width: 5},
+			{Title: "SERVICE", Width: 26},
+			{Title: "STATE", Width: 10},
+		})
+	}
 }
 
 func (m *Model) initWizardInputs() {
@@ -331,6 +359,92 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsError = false
 				return m, nil
 			}
+
+		case "v", "V":
+			// Toggle Compact vs Detailed view mode
+			if m.viewMode == TableViewCompact {
+				m.viewMode = TableViewDetailed
+			} else {
+				m.viewMode = TableViewCompact
+			}
+			m.recalcLayout()
+			m.applyFilter()
+			m.statusMessage = fmt.Sprintf("View mode: %s", m.viewMode)
+			m.statusIsError = false
+			return m, nil
+
+		case "o", "O":
+			// Cycle Sort Field
+			m.sortField = (m.sortField + 1) % 6
+			if m.sortField == SortByCPU || m.sortField == SortByMemory || m.sortField == SortByUptime || m.sortField == SortByStartTime {
+				m.sortDir = SortDesc
+			} else {
+				m.sortDir = SortAsc
+			}
+			m.applyFilter()
+			m.statusMessage = fmt.Sprintf("Sorted by %s (%s)", m.sortField, m.sortDir.Arrow())
+			m.statusIsError = false
+			return m, nil
+
+		case "p", "P":
+			// Toggle Sort Direction
+			if m.sortDir == SortAsc {
+				m.sortDir = SortDesc
+			} else {
+				m.sortDir = SortAsc
+			}
+			m.applyFilter()
+			m.statusMessage = fmt.Sprintf("Sort order: %s %s", m.sortField, m.sortDir.Arrow())
+			m.statusIsError = false
+			return m, nil
+
+		case "1":
+			m.sortField = SortByName
+			m.sortDir = SortAsc
+			m.applyFilter()
+			m.statusMessage = "Sorted by Name (▲)"
+			m.statusIsError = false
+			return m, nil
+
+		case "2":
+			m.sortField = SortByStatus
+			m.sortDir = SortAsc
+			m.applyFilter()
+			m.statusMessage = "Sorted by Status (▲)"
+			m.statusIsError = false
+			return m, nil
+
+		case "3":
+			m.sortField = SortByStartTime
+			m.sortDir = SortDesc
+			m.applyFilter()
+			m.statusMessage = "Sorted by Start Time (▼)"
+			m.statusIsError = false
+			return m, nil
+
+		case "4":
+			m.sortField = SortByUptime
+			m.sortDir = SortDesc
+			m.applyFilter()
+			m.statusMessage = "Sorted by Uptime (▼)"
+			m.statusIsError = false
+			return m, nil
+
+		case "5":
+			m.sortField = SortByCPU
+			m.sortDir = SortDesc
+			m.applyFilter()
+			m.statusMessage = "Sorted by CPU (▼)"
+			m.statusIsError = false
+			return m, nil
+
+		case "6":
+			m.sortField = SortByMemory
+			m.sortDir = SortDesc
+			m.applyFilter()
+			m.statusMessage = "Sorted by RAM (▼)"
+			m.statusIsError = false
+			return m, nil
 
 		case "n", "N", "c", "C":
 			// Open New Service / Daemon Creation Wizard!
@@ -639,7 +753,10 @@ func (m *Model) renderDashboardView() string {
 		Padding(0, 1).
 		Render(strings.ToUpper(string(m.sType)))
 
-	headerText := fmt.Sprintf(" Alirun (%s) | Scope: %s ", m.mgr.Name(), modeBadge)
+	sortBadge := lipgloss.NewStyle().Bold(true).Foreground(ColorActive).Render(fmt.Sprintf("%s %s", m.sortField, m.sortDir.Arrow()))
+	viewBadge := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render(m.viewMode.String())
+
+	headerText := fmt.Sprintf(" Alirun (%s) | Scope: %s | View: %s | Sort: %s ", m.mgr.Name(), modeBadge, viewBadge, sortBadge)
 	if m.searchMode {
 		headerText += fmt.Sprintf(" | 🔍 %s  [Tab/Enter: Select, Esc: Clear]", m.searchInput.View())
 	} else if m.searchInput.Value() != "" {
@@ -648,9 +765,23 @@ func (m *Model) renderDashboardView() string {
 	header := HeaderStyle.Width(m.width).Render(headerText)
 
 	// 2. Main content panes
-	leftWidth := m.width * 45 / 100
-	if leftWidth < 30 {
-		leftWidth = 30
+	var leftWidth int
+	if m.viewMode == TableViewDetailed {
+		leftWidth = m.width * 60 / 100
+		if leftWidth < 68 {
+			leftWidth = 68
+		}
+		if leftWidth > m.width-30 {
+			leftWidth = m.width - 30
+		}
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
+	} else {
+		leftWidth = m.width * 45 / 100
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
 	}
 	rightWidth := m.width - leftWidth - 4
 
@@ -928,6 +1059,8 @@ func (m *Model) renderFooter() string {
 
 	hints := []string{
 		lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(" [N]ew Daemon ") + " ",
+		KeyHintStyle.Render("[V]") + "iew",
+		KeyHintStyle.Render("[O/P]") + " Sort",
 		KeyHintStyle.Render("[Tab]") + " Focus",
 		KeyHintStyle.Render("[S]") + "tart",
 		KeyHintStyle.Render("[X]") + "top",
@@ -948,10 +1081,25 @@ func (m *Model) recalcLayout() {
 		return
 	}
 
-	leftWidth := m.width * 45 / 100
-	if leftWidth < 30 {
-		leftWidth = 30
+	var leftWidth int
+	if m.viewMode == TableViewDetailed {
+		leftWidth = m.width * 60 / 100
+		if leftWidth < 68 {
+			leftWidth = 68
+		}
+		if leftWidth > m.width-30 {
+			leftWidth = m.width - 30
+		}
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
+	} else {
+		leftWidth = m.width * 45 / 100
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
 	}
+
 	m.table.SetWidth(leftWidth - 4)
 	m.table.SetHeight(m.height - 7)
 
@@ -962,6 +1110,8 @@ func (m *Model) recalcLayout() {
 
 	m.logsViewport.Width = rightWidth
 	m.logsViewport.Height = logsHeight
+
+	m.updateTableColumns()
 }
 
 func (m *Model) currentSelected() *initsys.ServiceInfo {
@@ -975,7 +1125,11 @@ func (m *Model) currentSelected() *initsys.ServiceInfo {
 func (m *Model) applyFilter() {
 	query := strings.ToLower(m.searchInput.Value())
 	var filtered []initsys.ServiceInfo
-	var rows []table.Row
+
+	var selectedName string
+	if cur := m.currentSelected(); cur != nil {
+		selectedName = cur.Name
+	}
 
 	for _, s := range m.rawServices {
 		if query != "" {
@@ -985,7 +1139,16 @@ func (m *Model) applyFilter() {
 				continue
 			}
 		}
+		filtered = append(filtered, s)
+	}
 
+	// Sort filtered services
+	SortServices(filtered, m.sortField, m.sortDir)
+
+	m.updateTableColumns()
+
+	var rows []table.Row
+	for _, s := range filtered {
 		var stIcon string
 		if s.IsTimer {
 			switch s.Status {
@@ -1007,18 +1170,43 @@ func (m *Model) applyFilter() {
 			}
 		}
 
-		rows = append(rows, table.Row{
-			stIcon,
-			s.Name,
-			s.SubState,
-		})
-		filtered = append(filtered, s)
+		if m.viewMode == TableViewDetailed {
+			rows = append(rows, table.Row{
+				stIcon,
+				s.Name,
+				s.SubState,
+				FormatCPU(s.CPUUsageNSec),
+				FormatRAM(s.MemoryBytes),
+				FormatUptime(s.ActiveSince, s.Status),
+				FormatPID(s.PID),
+			})
+		} else {
+			rows = append(rows, table.Row{
+				stIcon,
+				s.Name,
+				s.SubState,
+			})
+		}
 	}
 
 	m.services = filtered
 	m.table.SetRows(rows)
-	if m.table.Cursor() >= len(rows) && len(rows) > 0 {
-		m.table.SetCursor(len(rows) - 1)
+
+	// Preserve selected service
+	newCursor := 0
+	if selectedName != "" {
+		for i, s := range filtered {
+			if s.Name == selectedName {
+				newCursor = i
+				break
+			}
+		}
+	}
+	if len(rows) > 0 {
+		if newCursor >= len(rows) {
+			newCursor = len(rows) - 1
+		}
+		m.table.SetCursor(newCursor)
 	}
 }
 

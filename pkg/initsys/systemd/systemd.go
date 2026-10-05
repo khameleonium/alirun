@@ -83,6 +83,7 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 	}
 
 	timersMap := m.getActiveTimersMap(ctx, sType)
+	bulkMetrics := m.getBulkMetricsMap(ctx, sType)
 
 	var results []initsys.ServiceInfo
 	for _, u := range unitStatuses {
@@ -104,10 +105,91 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 			svc.IsTimer = true
 			svc.TimerNext = next
 		}
+		if bm, ok := bulkMetrics[svc.Name]; ok {
+			svc.PID = bm.PID
+			svc.MemoryBytes = bm.MemoryBytes
+			svc.CPUUsageNSec = bm.CPUUsageNSec
+			svc.ActiveSince = bm.ActiveSince
+		}
 		results = append(results, svc)
 	}
 
 	return results, nil
+}
+
+type unitBulkMetrics struct {
+	PID          int
+	MemoryBytes  uint64
+	CPUUsageNSec uint64
+	ActiveSince  time.Time
+}
+
+func (m *Manager) getBulkMetricsMap(ctx context.Context, sType initsys.ServiceType) map[string]unitBulkMetrics {
+	metricsMap := make(map[string]unitBulkMetrics)
+	args := []string{"show", "*.service", "--no-pager",
+		"-p", "Id",
+		"-p", "MainPID",
+		"-p", "MemoryCurrent",
+		"-p", "CPUUsageNSec",
+		"-p", "ActiveEnterTimestamp",
+	}
+	if sType == initsys.TypeUser {
+		args = append([]string{"--user"}, args...)
+	}
+
+	out, err := exec.CommandContext(ctx, "systemctl", args...).Output()
+	if err != nil {
+		return metricsMap
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	var curId string
+	var curMetrics unitBulkMetrics
+
+	commitCurrent := func() {
+		if curId != "" {
+			name := strings.TrimSuffix(curId, ".service")
+			metricsMap[name] = curMetrics
+			curId = ""
+			curMetrics = unitBulkMetrics{}
+		}
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			commitCurrent()
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key, val := parts[0], parts[1]
+		switch key {
+		case "Id":
+			curId = val
+		case "MainPID":
+			if pid, err := strconv.Atoi(val); err == nil {
+				curMetrics.PID = pid
+			}
+		case "MemoryCurrent":
+			if mem, err := strconv.ParseUint(val, 10, 64); err == nil && mem < 18446744073709551615 {
+				curMetrics.MemoryBytes = mem
+			}
+		case "CPUUsageNSec":
+			if cpu, err := strconv.ParseUint(val, 10, 64); err == nil && cpu < 18446744073709551615 {
+				curMetrics.CPUUsageNSec = cpu
+			}
+		case "ActiveEnterTimestamp":
+			if t, err := time.Parse("Mon 2006-01-02 15:04:05 MST", val); err == nil {
+				curMetrics.ActiveSince = t
+			}
+		}
+	}
+	commitCurrent()
+
+	return metricsMap
 }
 
 func (m *Manager) getActiveTimersMap(ctx context.Context, sType initsys.ServiceType) map[string]string {
@@ -153,6 +235,7 @@ func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]
 	}
 
 	timersMap := m.getActiveTimersMap(ctx, sType)
+	bulkMetrics := m.getBulkMetricsMap(ctx, sType)
 
 	var results []initsys.ServiceInfo
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
@@ -190,6 +273,12 @@ func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]
 		if next, ok := timersMap[svc.Name]; ok {
 			svc.IsTimer = true
 			svc.TimerNext = next
+		}
+		if bm, ok := bulkMetrics[svc.Name]; ok {
+			svc.PID = bm.PID
+			svc.MemoryBytes = bm.MemoryBytes
+			svc.CPUUsageNSec = bm.CPUUsageNSec
+			svc.ActiveSince = bm.ActiveSince
 		}
 		results = append(results, svc)
 	}

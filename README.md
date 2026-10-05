@@ -53,8 +53,16 @@ alirun create ./myscript.sh
 # Create daemon from an arbitrary command
 alirun create "python3 -m http.server 8080" --name my-web --preset web --now
 
-# List active user services
+# List active user services (compact view)
 alirun list
+
+# Detailed view with CPU, RAM, Uptime, and PID
+alirun list -d
+
+# Sort services by CPU, RAM, Uptime, or Status
+alirun list --sort cpu -d
+alirun list --sort ram -d
+alirun list --sort uptime -r
 
 # Filter services by name or description
 alirun list --search telegram
@@ -83,6 +91,9 @@ alirun
 
 **Keybindings:**
 - **`N` / `C`**: Open embedded **New Daemon Creation Wizard** (with real-time unit syntax preview)
+- **`V`**: Toggle **Table View Mode** (Compact vs Detailed with CPU, RAM, Uptime, PID)
+- **`O` / `P`**: Cycle **Sort Field** (Name, Status, Start, Uptime, CPU, RAM) / Reverse Sort Direction (`▲` / `▼`)
+- **`1`..`6`**: Direct sort by Name (1), Status (2), Start Time (3), Uptime (4), CPU (5), RAM (6)
 - **`↑ / ↓` (or `j / k`)**: Navigate services list
 - **`Tab`**: Switch focus between Table and Logs viewport (or exit search)
 - **`S` / `X` / `R`**: Start / Stop / Restart selected service
@@ -144,8 +155,16 @@ alirun create ./myscript.sh
 # Создание демона из произвольной команды
 alirun create "python3 -m http.server 8080" --name my-web --preset web --now
 
-# Список активных служб пользователя
+# Список активных служб пользователя (компактный вид)
 alirun list
+
+# Подробный вид таблицы (с ЦП, ОЗУ, Аптаймом и PID)
+alirun list -d
+
+# Сортировка по нагрузке процессора, памяти, аптайму или статусу
+alirun list --sort cpu -d
+alirun list --sort ram -d
+alirun list --sort uptime -r
 
 # Поиск по имени или описанию
 alirun list --search telegram
@@ -174,6 +193,9 @@ alirun
 
 **Горячие клавиши:**
 - **`N` / `C`**: Открыть встроенный **Мастер создания нового демона** (с live-preview)
+- **`V`**: Переключить **Вид таблицы** (Упрощенный / Подробный с ЦП, ОЗУ, Аптаймом и PID)
+- **`O` / `P`**: Переключить **Поле сортировки** (Имя, Статус, Время запуска, Аптайм, ЦП, ОЗУ) / Направление (`▲` / `▼`)
+- **`1`..`6`**: Быстрая сортировка по Имени (1), Статусу (2), Времени запуска (3), Аптайму (4), ЦП (5), ОЗУ (6)
 - **`↑ / ↓` (или `j / k`)**: Навигация по списку служб
 - **`Tab`**: Переключение фокуса между таблицей и логами
 - **`S` / `X` / `R`**: Запустить / Остановить / Перезапустить
@@ -203,6 +225,7 @@ alirun/
 ├── internal/tui/             # Полноэкранный TUI (Bubble Tea)
 │   ├── app.go                # Реактивная модель, стейт и цикл событий
 │   ├── metrics.go            # Мониторинг CPU%/RAM, спарклайны и прогресс-бары
+│   ├── sort.go               # Модели сортировки, переключение режимов таблицы и форматтеры
 │   └── styles.go             # Цвета, границы и бейджи
 ├── pkg/
 │   ├── initsys/              # Модульное ядро мульти-инит систем

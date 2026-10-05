@@ -1,0 +1,14 @@
+# Binaries
+bin/
+/alirun
+
+# Go
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~

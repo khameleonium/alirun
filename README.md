@@ -80,6 +80,14 @@ alirun restart my-web
 alirun enable my-web
 alirun disable my-web
 alirun delete my-web
+
+# Cron Jobs Management (Classic Crontab)
+alirun cron list                        # List user cron jobs with human-readable schedules & next run
+alirun cron list --system               # List system crontab jobs (/etc/crontab and /etc/cron.d/*)
+alirun cron add -s "*/15 * * * *" -c "/backup.sh" -m "DB backup"  # Add new cron job
+alirun cron toggle cron-1               # Enable / Disable job (comments out with # without deleting)
+alirun cron run cron-1                  # Test run a cron job command immediately on demand
+alirun cron remove cron-1               # Delete cron job from crontab
 ```
 
 ### 🖥 TUI Dashboard
@@ -90,16 +98,17 @@ alirun
 ```
 
 **Keybindings:**
-- **`N` / `C`**: Open embedded **New Daemon Creation Wizard** (with real-time unit syntax preview)
+- **`M`**: Switch active **Manager** (**Systemd** ⟷ **Cron**)
+- **`N` / `C`**: Open embedded **New Daemon / Job Creation Wizard** (with real-time syntax preview)
 - **`V`**: Toggle **Table View Mode** (Compact vs Detailed with CPU, RAM, Uptime, PID)
 - **`O` / `P`**: Cycle **Sort Field** (Name, Status, Start, Uptime, CPU, RAM) / Reverse Sort Direction (`▲` / `▼`)
 - **`1`..`6`**: Direct sort by Name (1), Status (2), Start Time (3), Uptime (4), CPU (5), RAM (6)
 - **`↑ / ↓` (or `j / k`)**: Navigate services list
 - **`Tab`**: Switch focus between Table and Logs viewport (or exit search)
-- **`S` / `X` / `R`**: Start / Stop / Restart selected service
-- **`E` / `D`**: Enable / Disable autostart
-- **`Del` / `Backspace`**: Delete service with confirmation
-- **`U`**: Toggle User mode (`~/.config/systemd/user/`) and System mode (`/etc/systemd/system/`)
+- **`S` / `X` / `R`**: Start (or Run Now for cron) / Stop / Restart selected service
+- **`E` / `D`**: Enable / Disable autostart (or comment/uncomment for cron)
+- **`Del` / `Backspace`**: Delete service / cron job with confirmation
+- **`U`**: Toggle User mode (`~/.config/systemd/user/` / user crontab) and System mode (`/etc/systemd/system/` / `/etc/crontab`)
 - **`/`**: Search/filter services (press `Tab`, `Enter`, or `↓/↑` to navigate results, `Esc` to clear)
 - **`Esc`**: Clear search filter / Cancel wizard
 - **`Q` / `Ctrl+C`**: Quit
@@ -182,6 +191,14 @@ alirun restart my-web
 alirun enable my-web
 alirun disable my-web
 alirun delete my-web
+
+# Управление классическими задачами Cron (crontab)
+alirun cron list                        # Список пользовательских задач cron с читаемым расписанием и временем следующего запуска
+alirun cron list --system               # Общесистемные задачи cron (/etc/crontab и /etc/cron.d/*)
+alirun cron add -s "*/15 * * * *" -c "/backup.sh" -m "Резервное копирование БД" # Добавить новую задачу
+alirun cron toggle cron-1               # Включить / Выключить (комментирует через # без удаления)
+alirun cron run cron-1                  # Запустить команду cron немедленно по требованию
+alirun cron remove cron-1               # Удалить задачу из crontab
 ```
 
 ### 🖥 Полноэкранный TUI-интерфейс
@@ -192,16 +209,17 @@ alirun
 ```
 
 **Горячие клавиши:**
-- **`N` / `C`**: Открыть встроенный **Мастер создания нового демона** (с live-preview)
+- **`M`**: Переключить активный **Менеджер** (**Systemd** ⟷ **Cron**)
+- **`N` / `C`**: Открыть встроенный **Мастер создания нового демона / cron-задачи** (с live-preview)
 - **`V`**: Переключить **Вид таблицы** (Упрощенный / Подробный с ЦП, ОЗУ, Аптаймом и PID)
 - **`O` / `P`**: Переключить **Поле сортировки** (Имя, Статус, Время запуска, Аптайм, ЦП, ОЗУ) / Направление (`▲` / `▼`)
 - **`1`..`6`**: Быстрая сортировка по Имени (1), Статусу (2), Времени запуска (3), Аптайму (4), ЦП (5), ОЗУ (6)
 - **`↑ / ↓` (или `j / k`)**: Навигация по списку служб
 - **`Tab`**: Переключение фокуса между таблицей и логами
-- **`S` / `X` / `R`**: Запустить / Остановить / Перезапустить
-- **`E` / `D`**: Включить / Выключить автозапуск
-- **`Del` / `Backspace`**: Удалить службу с подтверждением
-- **`U`**: Переключить режим (User / System)
+- **`S` / `X` / `R`**: Запустить (или Запустить прямо сейчас для cron) / Остановить / Перезапустить
+- **`E` / `D`**: Включить / Выключить (раскомментировать/закомментировать для cron)
+- **`Del` / `Backspace`**: Удалить службу / cron-задачу с подтверждением
+- **`U`**: Переключить режим (User: `~/.config/systemd/user/` или `crontab` / System: `/etc/systemd/system/` или `/etc/crontab`)
 - **`/`**: Поиск и фильтрация списка (при этом `Tab`, `Enter` или `↓/↑` переключают фокус на найденные службы, а `Esc` сбрасывает фильтр)
 - **`Esc`**: Сброс фильтра / Отмена создания
 - **`Q` / `Ctrl+C`**: Выход

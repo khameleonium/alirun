@@ -3,6 +3,7 @@ package cmd
 import (
 	"alirun/internal/tui"
 	"alirun/pkg/initsys"
+	_ "alirun/pkg/initsys/cron"
 	_ "alirun/pkg/initsys/openrc"
 	_ "alirun/pkg/initsys/systemd"
 	_ "alirun/pkg/initsys/xdg"
@@ -53,7 +54,7 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&flagInit, "init", "auto", "Init system provider ('auto', 'systemd', 'xdg', 'openrc')")
+	rootCmd.PersistentFlags().StringVar(&flagInit, "init", "auto", "Init system provider ('auto', 'systemd', 'cron', 'xdg', 'openrc')")
 	rootCmd.PersistentFlags().BoolVar(&flagSystem, "system", false, "Operate on system-wide services (/etc/systemd/system, requires root)")
 	rootCmd.PersistentFlags().BoolVar(&flagUser, "user", true, "Operate on user services (~/.config/systemd/user, default)")
 }

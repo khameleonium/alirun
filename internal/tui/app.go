@@ -239,11 +239,17 @@ func (m *Model) initWizardInputs() {
 	m.wWorkDir.CharLimit = 150
 
 	m.wSchedule = textinput.New()
-	m.wSchedule.Placeholder = "e.g. hourly, daily, 15m, *-*-* 03:00:00"
-	m.wSchedule.SetValue("hourly")
+	if m.mgr != nil && m.mgr.Name() == "cron" {
+		m.wSchedule.Placeholder = "e.g. 0 * * * *, */15 * * * *, 0 3 * * *"
+		m.wSchedule.SetValue("0 * * * *")
+		m.wPreset = 3 // Scheduled Timer / Cron
+	} else {
+		m.wSchedule.Placeholder = "e.g. hourly, daily, 15m, *-*-* 03:00:00"
+		m.wSchedule.SetValue("hourly")
+		m.wPreset = 0 // Daemon
+	}
 	m.wSchedule.CharLimit = 80
 
-	m.wPreset = 0 // Daemon
 	m.wScope = m.sType
 	m.wFocusField = 0
 	m.wName.Focus()
@@ -527,6 +533,23 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchMode = true
 			m.table.Blur()
 			m.searchInput.Focus()
+			return m, nil
+
+		case "m", "M":
+			// Toggle manager: systemd <-> cron
+			targetMgrName := "cron"
+			if m.mgr.Name() == "cron" {
+				targetMgrName = "systemd"
+			}
+			newMgr, err := initsys.Get(targetMgrName)
+			if err == nil && newMgr.IsAvailable() {
+				m.mgr = newMgr
+				m.statusMessage = fmt.Sprintf("Switched manager to %s", m.mgr.Name())
+				m.statusIsError = false
+				return m, m.loadServicesCmd()
+			}
+			m.statusMessage = fmt.Sprintf("Manager %s is not available", targetMgrName)
+			m.statusIsError = true
 			return m, nil
 
 		case "u", "U":
@@ -968,14 +991,18 @@ func (m *Model) renderWizardView() string {
 	highlightedUnit := highlighter.HighlightUnit(unitContent)
 
 	destPath := m.mgr.GetConfigPath(strings.TrimSpace(m.wName.Value()), m.wScope)
+	previewTitle := "Live Unit Preview (.service)"
+	if m.mgr.Name() == "cron" {
+		previewTitle = "Live Crontab Preview"
+	}
 	rightContent := fmt.Sprintf("%s\n%s: %s\n\n%s",
-		lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render("Live Unit Preview (.service)"),
+		lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render(previewTitle),
 		lipgloss.NewStyle().Faint(true).Render("Destination"),
 		lipgloss.NewStyle().Bold(true).Render(destPath),
 		highlightedUnit,
 	)
 
-	if m.wPreset == 3 {
+	if m.mgr.Name() == "systemd" && m.wPreset == 3 {
 		cfg, _, _ := m.generateWizardConfig()
 		timerContent, err := systemd.GenerateTimerFile(cfg)
 		if err == nil {
@@ -1099,9 +1126,17 @@ func (m *Model) renderFooter() string {
 			KeyHintStyle.Render("[Any other key]"),
 		)
 	} else {
-		if m.width < 95 {
+		nextMgrLabel := "Cron"
+		newBtnLabel := " [N]ew Daemon "
+		if m.mgr != nil && m.mgr.Name() == "cron" {
+			nextMgrLabel = "Systemd"
+			newBtnLabel = " [N]ew Job "
+		}
+
+		if m.width < 105 {
 			hints := []string{
-				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(" [N]ew ") + " ",
+				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(newBtnLabel[:len(newBtnLabel)-1]) + " ",
+				KeyHintStyle.Render("[M]") + ":" + nextMgrLabel,
 				KeyHintStyle.Render("[V]") + "iew",
 				KeyHintStyle.Render("[O/P]") + "Sort",
 				KeyHintStyle.Render("[Tab]") + "Focus",
@@ -1115,7 +1150,8 @@ func (m *Model) renderFooter() string {
 			hintsLine = strings.Join(hints, "  ")
 		} else {
 			hints := []string{
-				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(" [N]ew Daemon ") + " ",
+				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(newBtnLabel) + " ",
+				KeyHintStyle.Render("[M]") + "gr: " + nextMgrLabel,
 				KeyHintStyle.Render("[V]") + "iew",
 				KeyHintStyle.Render("[O/P]") + " Sort (1-6)",
 				KeyHintStyle.Render("[Tab]") + " Focus",

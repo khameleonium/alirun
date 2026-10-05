@@ -331,6 +331,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.detail != nil {
 			m.selectedDetail = msg.detail
 			m.recordMetricSample(msg.detail)
+			for i := range m.services {
+				if m.services[i].Name == msg.detail.Name {
+					m.services[i].ConfigPath = msg.detail.ConfigPath
+					m.services[i].ExecPath = msg.detail.ExecPath
+					m.services[i].Description = msg.detail.Description
+					m.services[i].MemoryBytes = msg.detail.MemoryBytes
+					m.services[i].CPUUsageNSec = msg.detail.CPUUsageNSec
+					m.services[i].TasksCurrent = msg.detail.TasksCurrent
+					m.services[i].PID = msg.detail.PID
+					m.services[i].Ports = msg.detail.Ports
+					m.services[i].NetSummary = msg.detail.NetSummary
+					break
+				}
+			}
 		}
 		return m, nil
 
@@ -631,7 +645,11 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsError = true
 				return m, nil
 			}
-			session, err := editor.PrepareEdit(context.Background(), cur, m.mgr, m.sType)
+			targetInfo := cur
+			if m.selectedDetail != nil && m.selectedDetail.Name == cur.Name {
+				targetInfo = m.selectedDetail
+			}
+			session, err := editor.PrepareEdit(context.Background(), targetInfo, m.mgr, m.sType)
 			if err != nil {
 				m.statusMessage = fmt.Sprintf("Edit error: %v", err)
 				m.statusIsError = true
@@ -1278,11 +1296,21 @@ func (m *Model) renderDetails() string {
 	if !info.ActiveSince.IsZero() {
 		sb.WriteString(fmt.Sprintf("Uptime:  %s\n", time.Since(info.ActiveSince).Round(time.Second)))
 	}
-	if len(info.Ports) > 0 {
+	if info.NetSummary != "" {
+		if len(info.Ports) > 0 {
+			portsBadge := lipgloss.NewStyle().Foreground(ColorActive).Bold(true).Render(info.NetSummary)
+			sb.WriteString(fmt.Sprintf("Network: %s\n", portsBadge))
+		} else if strings.Contains(info.NetSummary, "outbound") {
+			netBadge := lipgloss.NewStyle().Foreground(ColorSecondary).Render(info.NetSummary)
+			sb.WriteString(fmt.Sprintf("Network: %s\n", netBadge))
+		} else {
+			sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render(info.NetSummary)))
+		}
+	} else if len(info.Ports) > 0 {
 		portsBadge := lipgloss.NewStyle().Foreground(ColorActive).Bold(true).Render(strings.Join(info.Ports, ", "))
 		sb.WriteString(fmt.Sprintf("Network: %s\n", portsBadge))
 	} else if info.PID > 0 {
-		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("None (no listening ports)")))
+		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("None (no active connections)")))
 	} else {
 		sb.WriteString(fmt.Sprintf("Network: %s\n", lipgloss.NewStyle().Faint(true).Render("Inactive (service stopped)")))
 	}

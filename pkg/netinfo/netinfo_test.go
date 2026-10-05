@@ -54,3 +54,26 @@ func TestGetListeningPortsForPID(t *testing.T) {
 		t.Errorf("expected port %d in %v", addr.Port, ports)
 	}
 }
+
+func TestFormatSummary(t *testing.T) {
+	s1 := NetSummary{
+		Listening: []string{":8080 (tcp)"},
+	}
+	if s1.FormatSummary() != ":8080 (tcp)" {
+		t.Errorf("unexpected: %s", s1.FormatSummary())
+	}
+
+	s2 := NetSummary{
+		OutboundRemotes: []string{"149.154.167.50:443", "149.154.167.35:443"},
+		OutboundCount:   3,
+	}
+	expected := "None listening (3 outbound -> 149.154.167.50:443, 149.154.167.35:443)"
+	if s2.FormatSummary() != expected {
+		t.Errorf("expected %q, got %q", expected, s2.FormatSummary())
+	}
+
+	s3 := NetSummary{}
+	if s3.FormatSummary() != "None (no active connections)" {
+		t.Errorf("expected 'None (no active connections)', got %q", s3.FormatSummary())
+	}
+}

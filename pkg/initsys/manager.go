@@ -52,6 +52,7 @@ type ServiceInfo struct {
 	ActiveSince  time.Time     `json:"active_since"`
 	InitSystem   string        `json:"init_system"`
 	Ports        []string      `json:"ports,omitempty"`
+	NetSummary   string        `json:"net_summary,omitempty"`
 }
 
 // ServiceConfig contains user inputs to generate a new service configuration

@@ -390,9 +390,11 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 		}
 	}
 
-	// Inspect listening network ports if process is running
+	// Inspect network activity if process is running
 	if info.PID > 0 {
-		info.Ports = netinfo.GetListeningPortsForPID(info.PID)
+		netSum := netinfo.GetNetSummaryForPID(info.PID)
+		info.Ports = netSum.Listening
+		info.NetSummary = netSum.FormatSummary()
 	}
 
 	return info, nil

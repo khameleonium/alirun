@@ -15,63 +15,133 @@ import (
 
 // SocketInfo represents an active socket from /proc/net
 type SocketInfo struct {
-	Proto string
-	IP    string
-	Port  int
-	Inode uint64
+	Proto      string
+	LocalIP    string
+	LocalPort  int
+	RemoteIP   string
+	RemotePort int
+	State      string // "LISTEN", "ESTABLISHED", etc.
+	Inode      uint64
+}
+
+// NetSummary provides a structured summary of process network activity
+type NetSummary struct {
+	Listening       []string
+	OutboundRemotes []string
+	OutboundCount   int
+}
+
+// FormatSummary formats the network activity into a readable string
+func (s NetSummary) FormatSummary() string {
+	if len(s.Listening) > 0 {
+		base := strings.Join(s.Listening, ", ")
+		if s.OutboundCount > 0 {
+			return fmt.Sprintf("%s [%d conn]", base, s.OutboundCount)
+		}
+		return base
+	}
+	if s.OutboundCount > 0 {
+		if len(s.OutboundRemotes) > 0 {
+			var remotesStr string
+			if len(s.OutboundRemotes) <= 2 {
+				remotesStr = strings.Join(s.OutboundRemotes, ", ")
+			} else {
+				remotesStr = fmt.Sprintf("%s, +%d more", strings.Join(s.OutboundRemotes[:2], ", "), len(s.OutboundRemotes)-2)
+			}
+			return fmt.Sprintf("None listening (%d outbound -> %s)", s.OutboundCount, remotesStr)
+		}
+		return fmt.Sprintf("None listening (%d outbound conn)", s.OutboundCount)
+	}
+	return "None (no active connections)"
 }
 
 var (
-	cacheMu     sync.RWMutex
-	cachedMap   map[uint64]SocketInfo
-	cachedTime  time.Time
-	cacheTTL    = 2 * time.Second
+	cacheMu    sync.RWMutex
+	cachedMap  map[uint64]SocketInfo
+	cachedTime time.Time
+	cacheTTL   = 2 * time.Second
+
+	tcpStateMap = map[string]string{
+		"01": "ESTABLISHED",
+		"02": "SYN_SENT",
+		"03": "SYN_RECV",
+		"04": "FIN_WAIT1",
+		"05": "FIN_WAIT2",
+		"06": "TIME_WAIT",
+		"07": "CLOSE",
+		"08": "CLOSE_WAIT",
+		"09": "LAST_ACK",
+		"0A": "LISTEN",
+		"0B": "CLOSING",
+	}
 )
 
 // GetListeningPortsForPID returns active listening ports for a given process PID
 func GetListeningPortsForPID(pid int) []string {
+	sum := GetNetSummaryForPID(pid)
+	return sum.Listening
+}
+
+// GetNetSummaryForPID returns active listening and outbound connection summary for a PID
+func GetNetSummaryForPID(pid int) NetSummary {
 	if pid <= 0 {
-		return nil
+		return NetSummary{}
 	}
 
 	inodes := getSocketInodesForPID(pid)
 	if len(inodes) == 0 {
-		return nil
+		return NetSummary{}
 	}
 
-	sockets := getListeningSocketsMap()
-	var res []string
-	seen := make(map[string]bool)
+	sockets := getAllSocketsMap()
+	var listening []string
+	seenListen := make(map[string]bool)
+	seenRemote := make(map[string]bool)
+	var remotes []string
+	outboundCount := 0
 
 	for _, inode := range inodes {
 		if sock, ok := sockets[inode]; ok {
-			var addr string
-			if sock.IP == "0.0.0.0" || sock.IP == "::" || sock.IP == "" {
-				addr = fmt.Sprintf(":%d (%s)", sock.Port, sock.Proto)
-			} else {
-				addr = fmt.Sprintf("%s:%d (%s)", sock.IP, sock.Port, sock.Proto)
-			}
+			if sock.State == "LISTEN" {
+				var addr string
+				if sock.LocalIP == "0.0.0.0" || sock.LocalIP == "::" || sock.LocalIP == "" {
+					addr = fmt.Sprintf(":%d (%s)", sock.LocalPort, strings.ToLower(sock.Proto))
+				} else {
+					addr = fmt.Sprintf("%s:%d (%s)", sock.LocalIP, sock.LocalPort, strings.ToLower(sock.Proto))
+				}
 
-			if !seen[addr] {
-				seen[addr] = true
-				res = append(res, addr)
+				if !seenListen[addr] {
+					seenListen[addr] = true
+					listening = append(listening, addr)
+				}
+			} else if sock.State == "ESTABLISHED" && sock.RemotePort > 0 {
+				outboundCount++
+				remoteAddr := fmt.Sprintf("%s:%d", sock.RemoteIP, sock.RemotePort)
+				if !seenRemote[remoteAddr] {
+					seenRemote[remoteAddr] = true
+					remotes = append(remotes, remoteAddr)
+				}
 			}
 		}
 	}
 
-	return res
+	return NetSummary{
+		Listening:       listening,
+		OutboundRemotes: remotes,
+		OutboundCount:   outboundCount,
+	}
 }
 
 // IsPortInUse checks if a port is actively bound by any process
 func IsPortInUse(port int, proto string) (bool, string) {
 	proto = strings.ToUpper(proto)
-	sockets := getListeningSocketsMap()
+	sockets := getAllSocketsMap()
 	for _, sock := range sockets {
-		if sock.Port == port && (proto == "" || sock.Proto == proto) {
-			if sock.IP == "0.0.0.0" || sock.IP == "::" {
-				return true, fmt.Sprintf(":%d (%s)", sock.Port, sock.Proto)
+		if sock.State == "LISTEN" && sock.LocalPort == port && (proto == "" || sock.Proto == proto) {
+			if sock.LocalIP == "0.0.0.0" || sock.LocalIP == "::" {
+				return true, fmt.Sprintf(":%d (%s)", sock.LocalPort, strings.ToLower(sock.Proto))
 			}
-			return true, fmt.Sprintf("%s:%d (%s)", sock.IP, sock.Port, sock.Proto)
+			return true, fmt.Sprintf("%s:%d (%s)", sock.LocalIP, sock.LocalPort, strings.ToLower(sock.Proto))
 		}
 	}
 	return false, ""
@@ -123,7 +193,7 @@ func getSocketInodesForPID(pid int) []uint64 {
 	return inodes
 }
 
-func getListeningSocketsMap() map[uint64]SocketInfo {
+func getAllSocketsMap() map[uint64]SocketInfo {
 	cacheMu.RLock()
 	if time.Since(cachedTime) < cacheTTL && cachedMap != nil {
 		defer cacheMu.RUnlock()
@@ -141,19 +211,19 @@ func getListeningSocketsMap() map[uint64]SocketInfo {
 	m := make(map[uint64]SocketInfo)
 
 	// Read TCP
-	parseProcNetFile("/proc/net/tcp", "TCP", true, m)
-	parseProcNetFile("/proc/net/tcp6", "TCP", true, m)
+	parseProcNetFile("/proc/net/tcp", "TCP", m)
+	parseProcNetFile("/proc/net/tcp6", "TCP", m)
 
 	// Read UDP
-	parseProcNetFile("/proc/net/udp", "UDP", false, m)
-	parseProcNetFile("/proc/net/udp6", "UDP", false, m)
+	parseProcNetFile("/proc/net/udp", "UDP", m)
+	parseProcNetFile("/proc/net/udp6", "UDP", m)
 
 	cachedMap = m
 	cachedTime = time.Now()
 	return m
 }
 
-func parseProcNetFile(path string, proto string, checkListenState bool, out map[uint64]SocketInfo) {
+func parseProcNetFile(path string, proto string, out map[uint64]SocketInfo) {
 	file, err := os.Open(path)
 	if err != nil {
 		return
@@ -172,13 +242,22 @@ func parseProcNetFile(path string, proto string, checkListenState bool, out map[
 		}
 
 		// fields[1] = local_address (IP:Port in hex)
-		// fields[3] = st (State: 0A = TCP_LISTEN)
+		// fields[2] = rem_address (IP:Port in hex)
+		// fields[3] = st (State)
 		// fields[9] = inode
 
-		state := fields[3]
-		// In TCP, 0A is LISTEN. In UDP, 07 is typical listening/open
-		if checkListenState && state != "0A" {
-			continue
+		stateCode := fields[3]
+		state := "UNKNOWN"
+		if proto == "TCP" {
+			if s, ok := tcpStateMap[stateCode]; ok {
+				state = s
+			}
+		} else {
+			if fields[2] == "00000000:0000" || fields[2] == "00000000000000000000000000000000:0000" {
+				state = "LISTEN"
+			} else {
+				state = "ESTABLISHED"
+			}
 		}
 
 		inode, err := strconv.ParseUint(fields[9], 10, 64)
@@ -186,16 +265,21 @@ func parseProcNetFile(path string, proto string, checkListenState bool, out map[
 			continue
 		}
 
-		ip, port, err := parseHexAddress(fields[1])
+		localIP, localPort, err := parseHexAddress(fields[1])
 		if err != nil {
 			continue
 		}
 
+		remoteIP, remotePort, _ := parseHexAddress(fields[2])
+
 		out[inode] = SocketInfo{
-			Proto: proto,
-			IP:    ip,
-			Port:  port,
-			Inode: inode,
+			Proto:      proto,
+			LocalIP:    localIP,
+			LocalPort:  localPort,
+			RemoteIP:   remoteIP,
+			RemotePort: remotePort,
+			State:      state,
+			Inode:      inode,
 		}
 	}
 }

@@ -47,7 +47,7 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 
 	// 1. Cron Manager
 	if mgrName == "cron" {
-		if sType == initsys.TypeUser || strings.Contains(info.ConfigPath, "crontab (user)") || info.ConfigPath == "" {
+		if sType == initsys.TypeUser || (info != nil && strings.Contains(info.ConfigPath, "crontab (user)")) || (info != nil && info.ConfigPath == "") {
 			// User crontab: export to a temporary file
 			content, err := cron.ReadUserCrontab()
 			if err != nil {
@@ -83,7 +83,10 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 		}
 
 		// System crontab file (/etc/crontab or /etc/cron.d/...)
-		path := info.ConfigPath
+		path := ""
+		if info != nil {
+			path = info.ConfigPath
+		}
 		if path == "" {
 			path = "/etc/crontab"
 		}
@@ -97,13 +100,32 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 
 	// 2. XDG Autostart Manager
 	if mgrName == "xdg" {
-		path := info.ConfigPath
-		if path == "" && mgr != nil {
+		path := ""
+		if info != nil {
+			path = info.ConfigPath
+		}
+		if path == "" && mgr != nil && info != nil {
 			path = mgr.GetConfigPath(info.Name, sType)
 		}
 		if path == "" {
 			return nil, fmt.Errorf("desktop config path not found for %s", info.Name)
 		}
+
+		// If user scope and editing a system desktop file (/etc/xdg/autostart/...)
+		if sType == initsys.TypeUser && strings.HasPrefix(path, "/etc/xdg/autostart/") {
+			home, _ := os.UserHomeDir()
+			if home != "" {
+				userPath := filepath.Join(home, ".config", "autostart", filepath.Base(path))
+				if _, err := os.Stat(userPath); os.IsNotExist(err) {
+					if content, err := os.ReadFile(path); err == nil {
+						_ = os.MkdirAll(filepath.Dir(userPath), 0755)
+						_ = os.WriteFile(userPath, content, 0644)
+					}
+				}
+				path = userPath
+			}
+		}
+
 		return &EditSession{
 			FilePath: path,
 			IsTemp:   false,
@@ -120,18 +142,50 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 		configPath = mgr.GetConfigPath(info.Name, sType)
 	}
 
-	if configPath == "" && info != nil {
-		// Fallback check standard locations
+	targetPersistentPath := ""
+	if info != nil {
 		if sType == initsys.TypeUser {
 			home, _ := os.UserHomeDir()
-			configPath = filepath.Join(home, ".config", "systemd", "user", ensureServiceSuffix(info.Name))
+			if home == "" {
+				home = os.Getenv("HOME")
+			}
+			targetPersistentPath = filepath.Join(home, ".config", "systemd", "user", ensureServiceSuffix(info.Name))
 		} else {
-			configPath = filepath.Join("/etc/systemd/system", ensureServiceSuffix(info.Name))
+			targetPersistentPath = filepath.Join("/etc/systemd/system", ensureServiceSuffix(info.Name))
 		}
 	}
 
 	if configPath == "" {
+		configPath = targetPersistentPath
+	}
+
+	if configPath == "" {
 		return nil, fmt.Errorf("could not determine configuration path for service %q", info.Name)
+	}
+
+	// Check if configPath is in a temporary or system vendor directory (/run/ or /usr/lib/ or /lib/)
+	// If so, direct edits would either be lost on reboot/reload or fail with permission denied.
+	// In standard systemd architecture, we create/edit a persistent override in targetPersistentPath
+	// (~/.config/systemd/user/... or /etc/systemd/system/...), pre-populated with existing unit content.
+	isEphemeralOrVendor := strings.HasPrefix(configPath, "/run/") ||
+		strings.HasPrefix(configPath, "/usr/lib/") ||
+		strings.HasPrefix(configPath, "/lib/")
+
+	if isEphemeralOrVendor && targetPersistentPath != "" && configPath != targetPersistentPath {
+		if err := os.MkdirAll(filepath.Dir(targetPersistentPath), 0755); err != nil {
+			return nil, fmt.Errorf("failed to create directory for override: %w", err)
+		}
+
+		// If persistent override does not exist yet, copy active unit content into it
+		if _, err := os.Stat(targetPersistentPath); os.IsNotExist(err) {
+			if existingBytes, readErr := os.ReadFile(configPath); readErr == nil {
+				header := fmt.Sprintf("# Persistent systemd unit override created by alirun for %s\n# Copied from: %s\n\n", info.Name, configPath)
+				_ = os.WriteFile(targetPersistentPath, append([]byte(header), existingBytes...), 0644)
+			}
+		}
+
+		// Edit the persistent file
+		configPath = targetPersistentPath
 	}
 
 	// If the file does not exist, check if directory exists or create parent
@@ -144,6 +198,13 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 		FilePath: configPath,
 		IsTemp:   false,
 		OnSaved: func() error {
+			// If file was left completely empty, remove it to cancel override
+			if data, err := os.ReadFile(configPath); err == nil {
+				if len(strings.TrimSpace(string(data))) == 0 {
+					_ = os.Remove(configPath)
+				}
+			}
+
 			// Trigger systemctl daemon-reload so changes are immediately active
 			if sMgr, ok := mgr.(*systemd.Manager); ok {
 				return sMgr.DaemonReload(ctx, sType)

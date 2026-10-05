@@ -85,10 +85,18 @@ var statusCmd = &cobra.Command{
 				info.ActiveSince.Format("2006-01-02 15:04:05"),
 				time.Since(info.ActiveSince).Round(time.Second)))
 		}
-		if len(info.Ports) > 0 {
-			lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#00E676")).Bold(true).Render(strings.Join(info.Ports, ", "))))
+		if info.NetSummary != "" {
+			if len(info.Ports) > 0 {
+				lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#00E676")).Bold(true).Render(info.NetSummary)))
+			} else if strings.Contains(info.NetSummary, "outbound") {
+				lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#29B6F6")).Render(info.NetSummary)))
+			} else {
+				lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Faint(true).Render(info.NetSummary)))
+			}
 		} else if info.PID > 0 {
-			lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Faint(true).Render("None (no open listening ports)")))
+			lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Faint(true).Render("None (no active connections)")))
+		} else {
+			lines = append(lines, fmt.Sprintf("Network:     %s", lipgloss.NewStyle().Faint(true).Render("Inactive (service stopped)")))
 		}
 		if info.ConfigPath != "" {
 			lines = append(lines, fmt.Sprintf("Unit File:   %s", info.ConfigPath))

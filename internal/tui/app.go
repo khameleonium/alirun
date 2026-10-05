@@ -1,12 +1,17 @@
 package tui
 
 import (
+	"alirun/pkg/diagnose"
+	"alirun/pkg/editor"
 	"alirun/pkg/highlighter"
 	"alirun/pkg/initsys"
+	_ "alirun/pkg/initsys/cron"
 	"alirun/pkg/initsys/systemd"
+	_ "alirun/pkg/initsys/xdg"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -16,6 +21,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+type editorFinishedMsg struct {
+	session *editor.EditSession
+	err     error
+}
 
 type ViewState int
 
@@ -59,6 +69,11 @@ type Model struct {
 	selectedDetail *initsys.ServiceInfo
 	logsViewport   viewport.Model
 	logsLines      []string
+	rawLogsLines   []string
+	logFilterLevel int // 0 = All, 1 = Warn+Err, 2 = Err
+	logPaused      bool
+	logSearchMode  bool
+	logSearchInput textinput.Model
 
 	focusPane int // 0 = table, 1 = logs
 
@@ -129,18 +144,25 @@ func NewModel(mgr initsys.Manager, sType initsys.ServiceType) *Model {
 	vp := viewport.New(40, 10)
 	vp.SetContent("Waiting for service logs...")
 
+	lsi := textinput.New()
+	lsi.Placeholder = "Search in logs..."
+	lsi.Prompt = "🔎 "
+	lsi.CharLimit = 64
+	lsi.Width = 25
+
 	m := &Model{
-		mgr:           mgr,
-		sType:         sType,
-		viewState:     ViewStateDashboard,
-		viewMode:      TableViewCompact,
-		sortField:     SortByName,
-		sortDir:       SortAsc,
-		table:         t,
-		logsViewport:  vp,
-		searchInput:   ti,
-		focusPane:     0,
-		metricHistory: make(map[string]*ServiceMetrics),
+		mgr:            mgr,
+		sType:          sType,
+		viewState:      ViewStateDashboard,
+		viewMode:       TableViewCompact,
+		sortField:      SortByName,
+		sortDir:        SortAsc,
+		table:          t,
+		logsViewport:   vp,
+		searchInput:    ti,
+		logSearchInput: lsi,
+		focusPane:      0,
+		metricHistory:  make(map[string]*ServiceMetrics),
 	}
 
 	m.initWizardInputs()
@@ -324,13 +346,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case logLineMsg:
-		m.logsLines = append(m.logsLines, string(msg))
-		if len(m.logsLines) > 500 {
-			m.logsLines = m.logsLines[len(m.logsLines)-500:]
+		incoming := strings.Split(string(msg), "\n")
+		m.rawLogsLines = append(m.rawLogsLines, incoming...)
+		if len(m.rawLogsLines) > 500 {
+			m.rawLogsLines = m.rawLogsLines[len(m.rawLogsLines)-500:]
 		}
-		m.logsViewport.SetContent(strings.Join(m.logsLines, "\n"))
-		m.logsViewport.GotoBottom()
+		if !m.logPaused {
+			m.reapplyLogsFilter()
+			m.logsViewport.GotoBottom()
+		}
 		return m, nil
+
+	case editorFinishedMsg:
+		if msg.session != nil && msg.session.Cleanup != nil {
+			msg.session.Cleanup()
+		}
+		if msg.err != nil {
+			m.statusMessage = fmt.Sprintf("Editor exited: %v", msg.err)
+			m.statusIsError = true
+			return m, nil
+		}
+		if msg.session != nil && msg.session.OnSaved != nil {
+			if err := msg.session.OnSaved(); err != nil {
+				m.statusMessage = fmt.Sprintf("Failed to reload after edit: %v", err)
+				m.statusIsError = true
+				return m, nil
+			}
+		}
+		m.statusMessage = "Configuration saved & reloaded."
+		m.statusIsError = false
+		return m, tea.Batch(m.loadServicesCmd(), m.loadSelectedDetailCmd(), m.startLogsStreamCmd())
 	}
 
 	// Dispatch by view state
@@ -383,6 +428,33 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.searchInput, cmd = m.searchInput.Update(msg)
 				m.applyFilter()
+				return m, cmd
+			}
+		}
+
+		// If in log search input mode
+		if m.logSearchMode {
+			switch msg.String() {
+			case "tab", "shift+tab", "enter":
+				m.logSearchMode = false
+				m.logSearchInput.Blur()
+				m.focusPane = 1
+				return m, nil
+
+			case "esc":
+				m.logSearchMode = false
+				m.logSearchInput.Blur()
+				if m.logSearchInput.Value() != "" {
+					m.logSearchInput.SetValue("")
+					m.reapplyLogsFilter()
+				}
+				m.focusPane = 1
+				return m, nil
+
+			default:
+				var cmd tea.Cmd
+				m.logSearchInput, cmd = m.logSearchInput.Update(msg)
+				m.reapplyLogsFilter()
 				return m, cmd
 			}
 		}
@@ -530,25 +602,82 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "/":
+			if m.focusPane == 1 {
+				m.logSearchMode = true
+				m.logSearchInput.Focus()
+				return m, nil
+			}
 			m.searchMode = true
 			m.table.Blur()
 			m.searchInput.Focus()
 			return m, nil
 
-		case "m", "M":
-			// Toggle manager: systemd <-> cron
-			targetMgrName := "cron"
-			if m.mgr.Name() == "cron" {
-				targetMgrName = "systemd"
+		case "f4", "ctrl+e":
+			cur := m.currentSelected()
+			if cur == nil {
+				m.statusMessage = "No service selected to edit."
+				m.statusIsError = true
+				return m, nil
 			}
-			newMgr, err := initsys.Get(targetMgrName)
-			if err == nil && newMgr.IsAvailable() {
-				m.mgr = newMgr
-				m.statusMessage = fmt.Sprintf("Switched manager to %s", m.mgr.Name())
+			session, err := editor.PrepareEdit(context.Background(), cur, m.mgr, m.sType)
+			if err != nil {
+				m.statusMessage = fmt.Sprintf("Edit error: %v", err)
+				m.statusIsError = true
+				return m, nil
+			}
+			ed := editor.FindEditor()
+			c := exec.Command(ed, session.FilePath)
+			return m, tea.ExecProcess(c, func(err error) tea.Msg {
+				return editorFinishedMsg{session: session, err: err}
+			})
+
+		case "l", "L":
+			m.logFilterLevel = (m.logFilterLevel + 1) % 3
+			levelNames := []string{"All", "Warnings + Errors", "Errors only"}
+			m.reapplyLogsFilter()
+			m.statusMessage = fmt.Sprintf("Log priority filter: %s", levelNames[m.logFilterLevel])
+			m.statusIsError = false
+			return m, nil
+
+		case " ":
+			if m.focusPane == 1 {
+				m.logPaused = !m.logPaused
+				if m.logPaused {
+					m.statusMessage = "Log streaming paused. Press Space to resume."
+				} else {
+					m.statusMessage = "Log streaming resumed (live)."
+					m.reapplyLogsFilter()
+					m.logsViewport.GotoBottom()
+				}
+				m.statusIsError = false
+				return m, nil
+			}
+
+		case "m", "M":
+			// Cycle manager: systemd -> cron -> xdg -> systemd
+			mgrOrder := []string{"systemd", "cron", "xdg"}
+			curName := m.mgr.Name()
+			var nextMgr initsys.Manager
+			for i, name := range mgrOrder {
+				if name == curName {
+					for step := 1; step <= len(mgrOrder); step++ {
+						targetName := mgrOrder[(i+step)%len(mgrOrder)]
+						candMgr, err := initsys.Get(targetName)
+						if err == nil && candMgr.IsAvailable() {
+							nextMgr = candMgr
+							break
+						}
+					}
+					break
+				}
+			}
+			if nextMgr != nil {
+				m.mgr = nextMgr
+				m.statusMessage = fmt.Sprintf("Switched manager to %s", strings.ToUpper(m.mgr.Name()))
 				m.statusIsError = false
 				return m, m.loadServicesCmd()
 			}
-			m.statusMessage = fmt.Sprintf("Manager %s is not available", targetMgrName)
+			m.statusMessage = "No other init manager available"
 			m.statusIsError = true
 			return m, nil
 
@@ -875,12 +1004,33 @@ func (m *Model) renderDashboardView() string {
 	if m.focusPane == 1 {
 		logsStyle = PaneFocusedStyle
 	}
+	// Log status badges
+	streamStatus := lipgloss.NewStyle().Foreground(ColorActive).Bold(true).Render("[LIVE]")
+	if m.logPaused {
+		streamStatus = lipgloss.NewStyle().Foreground(ColorWarning).Bold(true).Render("[PAUSED]")
+	}
+
+	levelNames := []string{"ALL", "WARN+ERR", "ERR"}
+	levelBadge := lipgloss.NewStyle().Foreground(ColorSecondary).Render(fmt.Sprintf("[Filter: %s]", levelNames[m.logFilterLevel]))
+
+	var logSearchBadge string
+	if m.logSearchMode {
+		logSearchBadge = fmt.Sprintf(" | 🔍 %s [Esc/Enter: Done]", m.logSearchInput.View())
+	} else if m.logSearchInput.Value() != "" {
+		logSearchBadge = fmt.Sprintf(" | 🔍 \"%s\" [Esc: Clear]", m.logSearchInput.Value())
+	}
+
+	logsTitle := fmt.Sprintf("%s %s %s%s",
+		lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render("Logs"),
+		streamStatus,
+		levelBadge,
+		logSearchBadge,
+	)
+
 	logsPane := logsStyle.
 		Width(rightWidth).
 		Height(logsHeight).
-		Render(fmt.Sprintf("%s\n%s",
-			lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render("Journalctl Logs"),
-			m.logsViewport.View()))
+		Render(fmt.Sprintf("%s\n%s", logsTitle, m.logsViewport.View()))
 
 	rightColumn := lipgloss.JoinVertical(lipgloss.Left, detailsPane, logsPane)
 	mainBody := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightColumn)
@@ -1055,6 +1205,14 @@ func (m *Model) renderDetails() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render(info.Name)
 	sb.WriteString(fmt.Sprintf("%s  [%s]  Enabled: %t\n", title, statusBadge, info.Enabled))
 
+	if info.Status == initsys.StatusFailed {
+		diag := diagnose.Diagnose(info, m.logsLines)
+		sb.WriteString(fmt.Sprintf("%s\n  %s\n",
+			lipgloss.NewStyle().Foreground(ColorFailed).Bold(true).Render("⚠ Doctor: "+diag.Summary),
+			lipgloss.NewStyle().Foreground(ColorActive).Render("Fix: "+diag.SuggestedFix),
+		))
+	}
+
 	if info.IsTimer {
 		timerInfo := "Active"
 		if info.TimerNext != "" {
@@ -1101,6 +1259,10 @@ func (m *Model) renderDetails() string {
 	if !info.ActiveSince.IsZero() {
 		sb.WriteString(fmt.Sprintf("Uptime:  %s\n", time.Since(info.ActiveSince).Round(time.Second)))
 	}
+	if len(info.Ports) > 0 {
+		portsBadge := lipgloss.NewStyle().Foreground(ColorActive).Bold(true).Render(strings.Join(info.Ports, ", "))
+		sb.WriteString(fmt.Sprintf("Ports:   %s\n", portsBadge))
+	}
 	if info.ConfigPath != "" {
 		sb.WriteString(fmt.Sprintf("Unit:    %s\n", info.ConfigPath))
 	}
@@ -1120,22 +1282,47 @@ func (m *Model) renderFooter() string {
 			KeyHintStyle.Render("[Esc]"),
 			KeyHintStyle.Render("[↑/↓]"),
 		)
+	} else if m.logSearchMode {
+		hintsLine = fmt.Sprintf("%s Confirm Log Search    %s Clear & Exit",
+			KeyHintStyle.Render("[Tab/Enter]"),
+			KeyHintStyle.Render("[Esc]"),
+		)
 	} else if m.confirmDelete {
 		hintsLine = fmt.Sprintf("%s Confirm Deletion    %s Cancel and keep service",
 			lipgloss.NewStyle().Bold(true).Background(ColorFailed).Foreground(lipgloss.Color("#FFFFFF")).Render(" [Y] "),
 			KeyHintStyle.Render("[Any other key]"),
 		)
+	} else if m.focusPane == 1 {
+		// Log pane focused hints
+		hints := []string{
+			KeyHintStyle.Render("[Space]") + " Pause/Live",
+			KeyHintStyle.Render("[L]") + " Priority Filter",
+			KeyHintStyle.Render("[/]") + " Search Logs",
+			KeyHintStyle.Render("[F4]") + " Edit Unit",
+			KeyHintStyle.Render("[Tab]") + " Table Focus",
+			KeyHintStyle.Render("[Q]") + "uit",
+		}
+		hintsLine = strings.Join(hints, "  ")
 	} else {
 		nextMgrLabel := "Cron"
 		newBtnLabel := " [N]ew Daemon "
-		if m.mgr != nil && m.mgr.Name() == "cron" {
-			nextMgrLabel = "Systemd"
-			newBtnLabel = " [N]ew Job "
+		if m.mgr != nil {
+			switch m.mgr.Name() {
+			case "systemd":
+				nextMgrLabel = "Cron"
+			case "cron":
+				nextMgrLabel = "XDG"
+				newBtnLabel = " [N]ew Job "
+			case "xdg":
+				nextMgrLabel = "Systemd"
+				newBtnLabel = " [N]ew App "
+			}
 		}
 
-		if m.width < 105 {
+		if m.width < 110 {
 			hints := []string{
 				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(newBtnLabel[:len(newBtnLabel)-1]) + " ",
+				KeyHintStyle.Render("[F4]") + "Edit",
 				KeyHintStyle.Render("[M]") + ":" + nextMgrLabel,
 				KeyHintStyle.Render("[V]") + "iew",
 				KeyHintStyle.Render("[O/P]") + "Sort",
@@ -1151,6 +1338,7 @@ func (m *Model) renderFooter() string {
 		} else {
 			hints := []string{
 				lipgloss.NewStyle().Bold(true).Background(ColorActive).Foreground(lipgloss.Color("#000000")).Render(newBtnLabel) + " ",
+				KeyHintStyle.Render("[F4]") + " Edit",
 				KeyHintStyle.Render("[M]") + "gr: " + nextMgrLabel,
 				KeyHintStyle.Render("[V]") + "iew",
 				KeyHintStyle.Render("[O/P]") + " Sort (1-6)",
@@ -1345,7 +1533,8 @@ func (m *Model) startLogsStreamCmd() tea.Cmd {
 		return nil
 	}
 
-	m.logsLines = []string{fmt.Sprintf("Loading logs for %s...", cur.Name)}
+	m.rawLogsLines = []string{fmt.Sprintf("Loading logs for %s...", cur.Name)}
+	m.logsLines = m.rawLogsLines
 	m.logsViewport.SetContent(strings.Join(m.logsLines, "\n"))
 
 	name := cur.Name
@@ -1357,7 +1546,7 @@ func (m *Model) startLogsStreamCmd() tea.Cmd {
 
 	return func() tea.Msg {
 		// Read initial lines
-		ch, err := mgr.StreamLogs(ctx, name, sType, 40, false)
+		ch, err := mgr.StreamLogs(ctx, name, sType, 60, false)
 		if err != nil {
 			return logLineMsg(fmt.Sprintf("Logs error: %v", err))
 		}
@@ -1371,6 +1560,46 @@ func (m *Model) startLogsStreamCmd() tea.Cmd {
 		return logLineMsg(strings.Join(lines, "\n"))
 	}
 }
+
+func (m *Model) reapplyLogsFilter() {
+	var filtered []string
+	searchQ := strings.ToLower(strings.TrimSpace(m.logSearchInput.Value()))
+
+	for _, line := range m.rawLogsLines {
+		lower := strings.ToLower(line)
+		switch m.logFilterLevel {
+		case 1: // Warn + Err
+			if !strings.Contains(lower, "err") &&
+				!strings.Contains(lower, "fail") &&
+				!strings.Contains(lower, "warn") &&
+				!strings.Contains(lower, "fatal") &&
+				!strings.Contains(lower, "crit") {
+				continue
+			}
+		case 2: // Err only
+			if !strings.Contains(lower, "err") &&
+				!strings.Contains(lower, "fail") &&
+				!strings.Contains(lower, "fatal") &&
+				!strings.Contains(lower, "crit") {
+				continue
+			}
+		}
+
+		if searchQ != "" && !strings.Contains(lower, searchQ) {
+			continue
+		}
+
+		filtered = append(filtered, line)
+	}
+
+	if len(filtered) == 0 {
+		filtered = append(filtered, "(no logs matching current filter)")
+	}
+
+	m.logsLines = filtered
+	m.logsViewport.SetContent(strings.Join(m.logsLines, "\n"))
+}
+
 
 func (m *Model) actionCmd(action, name string) tea.Cmd {
 	sType := m.sType

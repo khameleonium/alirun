@@ -51,6 +51,7 @@ type ServiceInfo struct {
 	ExecPath     string        `json:"exec_path"`
 	ActiveSince  time.Time     `json:"active_since"`
 	InitSystem   string        `json:"init_system"`
+	Ports        []string      `json:"ports,omitempty"`
 }
 
 // ServiceConfig contains user inputs to generate a new service configuration

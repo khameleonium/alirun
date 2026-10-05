@@ -2,6 +2,7 @@ package systemd
 
 import (
 	"alirun/pkg/initsys"
+	"alirun/pkg/netinfo"
 	"bufio"
 	"context"
 	"fmt"
@@ -389,6 +390,11 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 		}
 	}
 
+	// Inspect listening network ports if process is running
+	if info.PID > 0 {
+		info.Ports = netinfo.GetListeningPortsForPID(info.PID)
+	}
+
 	return info, nil
 }
 
@@ -506,6 +512,11 @@ func (m *Manager) DeleteService(ctx context.Context, name string, sType initsys.
 	_ = m.runSystemctl(ctx, sType, "reset-failed")
 
 	return nil
+}
+
+// DaemonReload reloads the systemd daemon configuration
+func (m *Manager) DaemonReload(ctx context.Context, sType initsys.ServiceType) error {
+	return m.runSystemctl(ctx, sType, "daemon-reload")
 }
 
 func (m *Manager) StreamLogs(ctx context.Context, name string, sType initsys.ServiceType, lines int, follow bool) (<-chan string, error) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -34,35 +35,43 @@ func (m *Manager) IsAvailable() bool {
 
 func (m *Manager) GetConfigPath(name string, sType initsys.ServiceType) string {
 	desktopName := ensureDesktopSuffix(name)
+	if sType == initsys.TypeSystem {
+		return filepath.Join("/etc", "xdg", "autostart", desktopName)
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "autostart", desktopName)
 }
 
 func (m *Manager) ListServices(ctx context.Context, sType initsys.ServiceType) ([]initsys.ServiceInfo, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(home, ".config", "autostart")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	var dirs []string
+	if sType == initsys.TypeSystem {
+		dirs = append(dirs, "/etc/xdg/autostart")
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		dirs = append(dirs, filepath.Join(home, ".config", "autostart"))
 	}
 
 	var results []initsys.ServiceInfo
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".desktop") {
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
 			continue
 		}
-		fullPath := filepath.Join(dir, entry.Name())
-		name := strings.TrimSuffix(entry.Name(), ".desktop")
 
-		info, err := m.parseDesktopFile(fullPath, name)
-		if err == nil {
-			results = append(results, *info)
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".desktop") {
+				continue
+			}
+			fullPath := filepath.Join(dir, entry.Name())
+			name := strings.TrimSuffix(entry.Name(), ".desktop")
+
+			info, err := m.parseDesktopFile(fullPath, name, sType)
+			if err == nil {
+				results = append(results, *info)
+			}
 		}
 	}
 
@@ -74,20 +83,42 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 	if _, err := os.Stat(fullPath); err != nil {
 		return nil, fmt.Errorf("desktop autostart file not found: %s", fullPath)
 	}
-	return m.parseDesktopFile(fullPath, name)
+	return m.parseDesktopFile(fullPath, name, sType)
 }
 
 func (m *Manager) Start(ctx context.Context, name string, sType initsys.ServiceType) error {
-	// XDG desktop files run on login; manual start can be triggered via gtk-launch or direct exec
-	return fmt.Errorf("XDG autostart entries start automatically on user desktop session login")
+	info, err := m.GetStatus(ctx, name, sType)
+	if err != nil {
+		return err
+	}
+	if info.ExecPath == "" {
+		return fmt.Errorf("no Exec path defined in %s", name)
+	}
+
+	// Clean Exec command (strip %u, %f, etc. from XDG spec)
+	cmdClean := cleanDesktopExec(info.ExecPath)
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdClean+" &")
+	return cmd.Start()
+}
+
+func cleanDesktopExec(execStr string) string {
+	parts := strings.Fields(execStr)
+	var clean []string
+	for _, p := range parts {
+		if strings.HasPrefix(p, "%") && len(p) == 2 {
+			continue // skip %f, %F, %u, %U, %i, %c, %k
+		}
+		clean = append(clean, p)
+	}
+	return strings.Join(clean, " ")
 }
 
 func (m *Manager) Stop(ctx context.Context, name string, sType initsys.ServiceType) error {
-	return fmt.Errorf("stopping individual desktop autostart sessions is not supported via XDG")
+	return m.Disable(ctx, name, sType)
 }
 
 func (m *Manager) Restart(ctx context.Context, name string, sType initsys.ServiceType) error {
-	return fmt.Errorf("restarting desktop autostart is not supported directly")
+	return m.Start(ctx, name, sType)
 }
 
 func (m *Manager) Enable(ctx context.Context, name string, sType initsys.ServiceType) error {
@@ -150,7 +181,7 @@ func (m *Manager) StreamLogs(ctx context.Context, name string, sType initsys.Ser
 	return ch, nil
 }
 
-func (m *Manager) parseDesktopFile(path, name string) (*initsys.ServiceInfo, error) {
+func (m *Manager) parseDesktopFile(path, name string, sType initsys.ServiceType) (*initsys.ServiceInfo, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -159,8 +190,7 @@ func (m *Manager) parseDesktopFile(path, name string) (*initsys.ServiceInfo, err
 
 	info := &initsys.ServiceInfo{
 		Name:       strings.TrimSuffix(name, ".desktop"),
-		Type:       initsys.TypeUser,
-		Status:     initsys.StatusInactive,
+		Type:       sType,
 		Enabled:    true,
 		ConfigPath: path,
 		InitSystem: "xdg",
@@ -188,6 +218,14 @@ func (m *Manager) parseDesktopFile(path, name string) (*initsys.ServiceInfo, err
 				info.Enabled = false
 			}
 		}
+	}
+
+	if info.Enabled {
+		info.Status = initsys.StatusActive
+		info.SubState = "autostart"
+	} else {
+		info.Status = initsys.StatusInactive
+		info.SubState = "hidden"
 	}
 
 	return info, nil

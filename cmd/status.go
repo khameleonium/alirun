@@ -85,6 +85,9 @@ var statusCmd = &cobra.Command{
 				info.ActiveSince.Format("2006-01-02 15:04:05"),
 				time.Since(info.ActiveSince).Round(time.Second)))
 		}
+		if len(info.Ports) > 0 {
+			lines = append(lines, fmt.Sprintf("Ports:       %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#00E676")).Bold(true).Render(strings.Join(info.Ports, ", "))))
+		}
 		if info.ConfigPath != "" {
 			lines = append(lines, fmt.Sprintf("Unit File:   %s", info.ConfigPath))
 		}

@@ -107,6 +107,8 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 			svc.TimerNext = next
 		}
 		if bm, ok := bulkMetrics[svc.Name]; ok {
+			svc.UnitFileState = bm.UnitFileState
+			svc.Enabled = isEnabledState(bm.UnitFileState)
 			svc.PID = bm.PID
 			svc.MemoryBytes = bm.MemoryBytes
 			svc.CPUUsageNSec = bm.CPUUsageNSec
@@ -119,16 +121,18 @@ func (m *Manager) listViaDBus(ctx context.Context, sType initsys.ServiceType) ([
 }
 
 type unitBulkMetrics struct {
-	PID          int
-	MemoryBytes  uint64
-	CPUUsageNSec uint64
-	ActiveSince  time.Time
+	UnitFileState string
+	PID           int
+	MemoryBytes   uint64
+	CPUUsageNSec  uint64
+	ActiveSince   time.Time
 }
 
 func (m *Manager) getBulkMetricsMap(ctx context.Context, sType initsys.ServiceType) map[string]unitBulkMetrics {
 	metricsMap := make(map[string]unitBulkMetrics)
 	args := []string{"show", "*.service", "--no-pager",
 		"-p", "Id",
+		"-p", "UnitFileState",
 		"-p", "MainPID",
 		"-p", "MemoryCurrent",
 		"-p", "CPUUsageNSec",
@@ -170,6 +174,8 @@ func (m *Manager) getBulkMetricsMap(ctx context.Context, sType initsys.ServiceTy
 		switch key {
 		case "Id":
 			curId = val
+		case "UnitFileState":
+			curMetrics.UnitFileState = val
 		case "MainPID":
 			if pid, err := strconv.Atoi(val); err == nil {
 				curMetrics.PID = pid
@@ -213,11 +219,7 @@ func (m *Manager) getActiveTimersMap(ctx context.Context, sType initsys.ServiceT
 		if len(fields) >= 2 {
 			activatedUnit := fields[len(fields)-1]
 			svcName := strings.TrimSuffix(activatedUnit, ".service")
-			nextTrigger := fields[0]
-			if len(fields) >= 5 {
-				nextTrigger = fmt.Sprintf("%s %s %s (%s left)", fields[0], fields[1], fields[2], fields[4])
-			}
-			timerMap[svcName] = nextTrigger
+			timerMap[svcName] = formatTimerNext(fields)
 		}
 	}
 	return timerMap
@@ -276,6 +278,8 @@ func (m *Manager) listViaCLI(ctx context.Context, sType initsys.ServiceType) ([]
 			svc.TimerNext = next
 		}
 		if bm, ok := bulkMetrics[svc.Name]; ok {
+			svc.UnitFileState = bm.UnitFileState
+			svc.Enabled = isEnabledState(bm.UnitFileState)
 			svc.PID = bm.PID
 			svc.MemoryBytes = bm.MemoryBytes
 			svc.CPUUsageNSec = bm.CPUUsageNSec
@@ -338,7 +342,8 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 		case "SubState":
 			info.SubState = val
 		case "UnitFileState":
-			info.Enabled = (val == "enabled" || val == "static")
+			info.UnitFileState = val
+			info.Enabled = isEnabledState(val)
 		case "MainPID":
 			if pid, err := strconv.Atoi(val); err == nil {
 				info.PID = pid
@@ -383,10 +388,7 @@ func (m *Manager) GetStatus(ctx context.Context, name string, sType initsys.Serv
 		timerText := strings.TrimSpace(string(timerOut))
 		if timerText != "" {
 			info.IsTimer = true
-			fields := strings.Fields(timerText)
-			if len(fields) >= 5 {
-				info.TimerNext = fmt.Sprintf("%s %s %s (%s left)", fields[0], fields[1], fields[2], fields[4])
-			}
+			info.TimerNext = formatTimerNext(strings.Fields(timerText))
 		}
 	}
 
@@ -458,8 +460,11 @@ func (m *Manager) InstallService(ctx context.Context, cfg initsys.ServiceConfig,
 	if cfg.Preset == initsys.PresetTimer {
 		timerPath := m.GetTimerConfigPath(cfg.Name, cfg.Type)
 		timerContent, err := GenerateTimerFile(cfg)
-		if err == nil {
-			_ = os.WriteFile(timerPath, []byte(timerContent), 0644)
+		if err != nil {
+			return unitPath, fmt.Errorf("service written, but timer generation failed: %w", err)
+		}
+		if err := os.WriteFile(timerPath, []byte(timerContent), 0644); err != nil {
+			return unitPath, fmt.Errorf("service written, but failed to write timer %s: %w", timerPath, err)
 		}
 	}
 
@@ -583,11 +588,56 @@ func (m *Manager) runSystemctl(ctx context.Context, sType initsys.ServiceType, s
 	return nil
 }
 
-func ensureServiceSuffix(name string) string {
-	if !strings.HasSuffix(name, ".service") {
-		return name + ".service"
+// unitSuffixes lists unit types that must not get an extra ".service" appended
+// (e.g. "backup.timer" must stay "backup.timer", not become "backup.timer.service").
+var unitSuffixes = []string{".service", ".timer", ".socket", ".path", ".target", ".mount"}
+
+var weekdayAbbrevs = map[string]bool{
+	"Mon": true, "Tue": true, "Wed": true, "Thu": true, "Fri": true, "Sat": true, "Sun": true,
+}
+
+// formatTimerNext converts one "systemctl list-timers --no-legend" row
+// (NEXT LEFT LAST PASSED UNIT ACTIVATES) into "Thu 2026-10-08 00:00:00 (1h 35min left)".
+// NEXT is either "-"/"n/a" or "Day Date Time TZ"; LEFT can consist of several words
+// ("1h 35min"), so it is read up to the beginning of the LAST column.
+func formatTimerNext(fields []string) string {
+	if len(fields) == 0 || fields[0] == "-" || fields[0] == "n/a" {
+		return ""
 	}
-	return name
+	if len(fields) < 4 {
+		return strings.Join(fields, " ")
+	}
+	next := strings.Join(fields[:3], " ")
+
+	// The last two columns are always UNIT and ACTIVATES
+	end := len(fields) - 2
+	var left []string
+	for i := 4; i < end; i++ {
+		if weekdayAbbrevs[fields[i]] || fields[i] == "-" || fields[i] == "n/a" {
+			break // start of the LAST column
+		}
+		if fields[i] == "left" {
+			continue // older systemd versions print "10min left" in the LEFT column
+		}
+		left = append(left, fields[i])
+	}
+	if len(left) == 0 {
+		return next
+	}
+	return fmt.Sprintf("%s (%s left)", next, strings.Join(left, " "))
+}
+
+func ensureServiceSuffix(name string) string {
+	for _, suffix := range unitSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return name
+		}
+	}
+	return name + ".service"
+}
+
+func isEnabledState(state string) bool {
+	return state == "enabled" || state == "static"
 }
 
 func mapActiveState(state string) initsys.ServiceStatus {

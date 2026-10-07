@@ -196,10 +196,17 @@ func (m *Manager) parseDesktopFile(path, name string, sType initsys.ServiceType)
 		InitSystem: "xdg",
 	}
 
+	// Only keys of the main [Desktop Entry] group are relevant: [Desktop Action ...] groups
+	// have their own Name= and Exec= that must not override the application's ones.
+	inMainGroup := false
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+		if strings.HasPrefix(line, "[") {
+			inMainGroup = line == desktopEntryGroup
+			continue
+		}
+		if !inMainGroup || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
 			continue
 		}
 		parts := strings.SplitN(line, "=", 2)
@@ -231,16 +238,13 @@ func (m *Manager) parseDesktopFile(path, name string, sType initsys.ServiceType)
 	return info, nil
 }
 
+const desktopEntryGroup = "[Desktop Entry]"
+
 func (m *Manager) toggleEnabled(path string, enable bool) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-
-	lines := strings.Split(string(content), "\n")
-	var newLines []string
-	foundHidden := false
-	foundGnome := false
 
 	hiddenVal := "false"
 	gnomeVal := "true"
@@ -249,27 +253,70 @@ func (m *Manager) toggleEnabled(path string, enable bool) error {
 		gnomeVal = "false"
 	}
 
-	for _, l := range lines {
+	newContent, err := setDesktopEntryKeys(string(content), []desktopKey{
+		{"Hidden", hiddenVal},
+		{"X-GNOME-Autostart-enabled", gnomeVal},
+	})
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return os.WriteFile(path, []byte(newContent), 0644)
+}
+
+type desktopKey struct {
+	key, value string
+}
+
+// setDesktopEntryKeys sets keys inside the [Desktop Entry] group only. Keys missing from the
+// group are inserted at the end of that group (not at the end of the file, which may belong
+// to a [Desktop Action ...] group where they would be ignored by the desktop environment).
+func setDesktopEntryKeys(content string, keys []desktopKey) (string, error) {
+	lines := strings.Split(content, "\n")
+	inMainGroup := false
+	groupFound := false
+	insertAt := -1 // index after the last non-empty line of the main group
+	found := make(map[string]bool)
+
+	for i, l := range lines {
 		trimmed := strings.TrimSpace(l)
-		if strings.HasPrefix(trimmed, "Hidden=") {
-			newLines = append(newLines, "Hidden="+hiddenVal)
-			foundHidden = true
-		} else if strings.HasPrefix(trimmed, "X-GNOME-Autostart-enabled=") {
-			newLines = append(newLines, "X-GNOME-Autostart-enabled="+gnomeVal)
-			foundGnome = true
-		} else {
-			newLines = append(newLines, l)
+		if strings.HasPrefix(trimmed, "[") {
+			inMainGroup = trimmed == desktopEntryGroup
+			if inMainGroup {
+				groupFound = true
+				insertAt = i + 1
+			}
+			continue
+		}
+		if !inMainGroup {
+			continue
+		}
+		if trimmed != "" {
+			insertAt = i + 1
+		}
+		for _, k := range keys {
+			if strings.HasPrefix(trimmed, k.key+"=") {
+				lines[i] = k.key + "=" + k.value
+				found[k.key] = true
+			}
 		}
 	}
 
-	if !foundHidden {
-		newLines = append(newLines, "Hidden="+hiddenVal)
-	}
-	if !foundGnome {
-		newLines = append(newLines, "X-GNOME-Autostart-enabled="+gnomeVal)
+	if !groupFound {
+		return "", fmt.Errorf("no %s group found", desktopEntryGroup)
 	}
 
-	return os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0644)
+	var missing []string
+	for _, k := range keys {
+		if !found[k.key] {
+			missing = append(missing, k.key+"="+k.value)
+		}
+	}
+	if len(missing) > 0 {
+		tail := append(missing, lines[insertAt:]...)
+		lines = append(lines[:insertAt], tail...)
+	}
+
+	return strings.Join(lines, "\n"), nil
 }
 
 func ensureDesktopSuffix(name string) string {

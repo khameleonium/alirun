@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -124,10 +125,22 @@ func (m *CronManager) GetStatus(ctx context.Context, name string, sType initsys.
 	}
 
 	target := strings.ToLower(strings.TrimSpace(name))
-	for _, s := range services {
-		sLower := strings.ToLower(s.Name)
-		if sLower == target || strings.Contains(sLower, target) || strings.Contains(target, sLower) {
-			return &s, nil
+	if id := jobIDFromTarget(name); id != "" {
+		for i := range services {
+			if strings.HasPrefix(strings.ToLower(services[i].Name), "["+id+"]") {
+				return &services[i], nil
+			}
+		}
+		return nil, fmt.Errorf("cron job %q not found", name)
+	}
+	for i := range services {
+		if strings.ToLower(services[i].Name) == target {
+			return &services[i], nil
+		}
+	}
+	for i := range services {
+		if strings.Contains(strings.ToLower(services[i].Name), target) {
+			return &services[i], nil
 		}
 	}
 
@@ -182,15 +195,7 @@ func (m *CronManager) setJobEnabled(ctx context.Context, name string, sType init
 		return err
 	}
 
-	target := strings.ToLower(strings.TrimSpace(name))
-	var matchedJob *CronJob
-	for _, j := range jobs {
-		fullName := strings.ToLower(fmt.Sprintf("[%s] %s", j.ID, j.DisplayName()))
-		if fullName == target || strings.Contains(fullName, target) || strings.Contains(target, strings.ToLower(j.ID)) {
-			matchedJob = j
-			break
-		}
-	}
+	matchedJob := findJob(jobs, name)
 
 	if matchedJob == nil {
 		return fmt.Errorf("cron job %q not found", name)
@@ -206,6 +211,49 @@ func (m *CronManager) setJobEnabled(ctx context.Context, name string, sType init
 	}
 
 	return SaveUserCrontab(newContent)
+}
+
+// jobIDFromTarget extracts a job ID ("cron-N") from targets like "cron-12" or "[cron-12] backup".
+// Returns "" when the target does not reference a job ID.
+func jobIDFromTarget(target string) string {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if strings.HasPrefix(t, "[") {
+		if end := strings.Index(t, "]"); end > 1 {
+			t = t[1:end]
+		}
+	}
+	if num, ok := strings.CutPrefix(t, "cron-"); ok {
+		if _, err := strconv.Atoi(num); err == nil {
+			return t
+		}
+	}
+	return ""
+}
+
+// findJob locates a job by exact ID first, then by exact or partial display name.
+// IDs are compared exactly so that "cron-12" never matches "cron-1".
+func findJob(jobs []*CronJob, name string) *CronJob {
+	if id := jobIDFromTarget(name); id != "" {
+		for _, j := range jobs {
+			if strings.ToLower(j.ID) == id {
+				return j
+			}
+		}
+		return nil
+	}
+
+	target := strings.ToLower(strings.TrimSpace(name))
+	for _, j := range jobs {
+		if strings.ToLower(fmt.Sprintf("[%s] %s", j.ID, j.DisplayName())) == target {
+			return j
+		}
+	}
+	for _, j := range jobs {
+		if strings.Contains(strings.ToLower(j.DisplayName()), target) {
+			return j
+		}
+	}
+	return nil
 }
 
 // DeleteService removes a cron job from crontab
@@ -227,15 +275,7 @@ func (m *CronManager) DeleteService(ctx context.Context, name string, sType init
 		return err
 	}
 
-	target := strings.ToLower(strings.TrimSpace(name))
-	var matchedJob *CronJob
-	for _, j := range jobs {
-		fullName := strings.ToLower(fmt.Sprintf("[%s] %s", j.ID, j.DisplayName()))
-		if fullName == target || strings.Contains(fullName, target) || strings.Contains(target, strings.ToLower(j.ID)) {
-			matchedJob = j
-			break
-		}
-	}
+	matchedJob := findJob(jobs, name)
 
 	if matchedJob == nil {
 		return fmt.Errorf("cron job %q not found", name)

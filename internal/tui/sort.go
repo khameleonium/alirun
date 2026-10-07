@@ -13,8 +13,8 @@ import (
 type TableViewMode int
 
 const (
-	TableViewCompact TableViewMode = iota // Simple (ST, SERVICE, STATE)
-	TableViewDetailed                     // Detailed (ST, SERVICE, STATE, CPU, RAM, UPTIME, PID)
+	TableViewCompact  TableViewMode = iota // Simple (ST, SERVICE, STATE)
+	TableViewDetailed                      // Detailed (ST, SERVICE, STATE, CPU, RAM, UPTIME, PID)
 )
 
 func (v TableViewMode) String() string {
@@ -74,73 +74,66 @@ func (d SortDirection) Arrow() string {
 func SortServices(services []initsys.ServiceInfo, field SortField, dir SortDirection) {
 	sort.SliceStable(services, func(i, j int) bool {
 		a, b := services[i], services[j]
-		var less bool
-		switch field {
-		case SortByName:
-			less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
-		case SortByStatus:
-			statusWeight := func(st initsys.ServiceStatus) int {
-				switch st {
-				case initsys.StatusActive:
-					return 0
-				case initsys.StatusFailed:
-					return 1
-				case initsys.StatusInactive:
-					return 2
-				default:
-					return 3
-				}
-			}
-			wa, wb := statusWeight(a.Status), statusWeight(b.Status)
-			if wa != wb {
-				less = wa < wb
-			} else {
-				less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
-			}
-		case SortByStartTime:
-			if a.ActiveSince.Equal(b.ActiveSince) {
-				less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
-			} else if a.ActiveSince.IsZero() {
-				less = false
-			} else if b.ActiveSince.IsZero() {
-				less = true
-			} else {
-				less = a.ActiveSince.Before(b.ActiveSince)
-			}
-		case SortByUptime:
-			uptime := func(s initsys.ServiceInfo) time.Duration {
-				if s.Status == initsys.StatusActive && !s.ActiveSince.IsZero() {
-					return time.Since(s.ActiveSince)
-				}
-				return 0
-			}
-			ua, ub := uptime(a), uptime(b)
-			if ua != ub {
-				less = ua < ub
-			} else {
-				less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
-			}
-		case SortByCPU:
-			if a.CPUUsageNSec != b.CPUUsageNSec {
-				less = a.CPUUsageNSec < b.CPUUsageNSec
-			} else {
-				less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
-			}
-		case SortByMemory:
-			if a.MemoryBytes != b.MemoryBytes {
-				less = a.MemoryBytes < b.MemoryBytes
-			} else {
-				less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
-			}
-		default:
-			less = strings.ToLower(a.Name) < strings.ToLower(b.Name)
+
+		// Services that never started have no start time: keep them at the bottom
+		// in both directions instead of moving them to the top on descending sort.
+		if field == SortByStartTime && a.ActiveSince.IsZero() != b.ActiveSince.IsZero() {
+			return b.ActiveSince.IsZero()
 		}
 
 		if dir == SortDesc {
-			return !less
+			return serviceLess(b, a, field)
 		}
-		return less
+		return serviceLess(a, b, field)
 	})
+}
+
+// serviceLess is a strict ordering by the given field with name as a tie-breaker
+func serviceLess(a, b initsys.ServiceInfo, field SortField) bool {
+	nameLess := strings.ToLower(a.Name) < strings.ToLower(b.Name)
+	switch field {
+	case SortByStatus:
+		statusWeight := func(st initsys.ServiceStatus) int {
+			switch st {
+			case initsys.StatusActive:
+				return 0
+			case initsys.StatusFailed:
+				return 1
+			case initsys.StatusInactive:
+				return 2
+			default:
+				return 3
+			}
+		}
+		if wa, wb := statusWeight(a.Status), statusWeight(b.Status); wa != wb {
+			return wa < wb
+		}
+	case SortByStartTime:
+		if !a.ActiveSince.Equal(b.ActiveSince) {
+			return a.ActiveSince.Before(b.ActiveSince)
+		}
+	case SortByUptime:
+		// Compare start times instead of time.Since() so repeated comparisons are consistent
+		hasUptime := func(s initsys.ServiceInfo) bool {
+			return s.Status == initsys.StatusActive && !s.ActiveSince.IsZero()
+		}
+		ha, hb := hasUptime(a), hasUptime(b)
+		if ha != hb {
+			return !ha // no uptime (0) is less than any uptime
+		}
+		if ha && !a.ActiveSince.Equal(b.ActiveSince) {
+			return a.ActiveSince.After(b.ActiveSince) // started later = shorter uptime
+		}
+	case SortByCPU:
+		if a.CPUUsageNSec != b.CPUUsageNSec {
+			return a.CPUUsageNSec < b.CPUUsageNSec
+		}
+	case SortByMemory:
+		if a.MemoryBytes != b.MemoryBytes {
+			return a.MemoryBytes < b.MemoryBytes
+		}
+	}
+	return nameLess
 }
 
 // FormatCPU formats nanoseconds into a friendly time string e.g. "44.4s", "1m20s"

@@ -156,17 +156,3 @@ func extractCronFields(line string, isSystem bool) (schedule, user, command stri
 	cmd := strings.Join(fields[5:], " ")
 	return sched, "", cmd, true
 }
-
-func isValidCronToken(s string) bool {
-	if s == "*" || strings.HasPrefix(s, "*/") {
-		return true
-	}
-	for _, ch := range s {
-		if (ch >= '0' && ch <= '9') || ch == ',' || ch == '-' || ch == '/' || ch == '*' ||
-			(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
-			continue
-		}
-		return false
-	}
-	return true
-}

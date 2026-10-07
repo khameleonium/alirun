@@ -23,18 +23,18 @@ const (
 
 // TargetInspection holds auto-detected properties of a target executable or script
 type TargetInspection struct {
-	OriginalPath      string
-	AbsolutePath      string
-	Exists            bool
-	IsExecutable      bool
-	SuggestedName     string
-	SuggestedWorkDir  string
-	DetectedType      FileType
-	Interpreter       string
-	ExecStartCommand  string
-	VirtualEnvPath    string
-	DetectedEnvVars   map[string]string
-	Warnings          []string
+	OriginalPath     string
+	AbsolutePath     string
+	Exists           bool
+	IsExecutable     bool
+	SuggestedName    string
+	SuggestedWorkDir string
+	DetectedType     FileType
+	Interpreter      string
+	ExecStartCommand string
+	VirtualEnvPath   string
+	DetectedEnvVars  map[string]string
+	Warnings         []string
 }
 
 // Inspect analyzes the given file path or command line and prepares service recommendations
@@ -234,7 +234,10 @@ func MakeExecutable(absPath string) error {
 	if err != nil {
 		return err
 	}
-	newMode := info.Mode() | 0755
+	// Like "chmod +x" with a typical umask: grant execute only to those who can already
+	// read the file (0600 -> 0700, 0644 -> 0755), never widen read/write access.
+	mode := info.Mode()
+	newMode := mode | (mode&0444)>>2 | 0100
 	return os.Chmod(absPath, newMode)
 }
 

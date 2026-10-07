@@ -63,20 +63,9 @@ var xdgListCmd = &cobra.Command{
 				st = "○ HIDDEN"
 			}
 
-			name := s.Name
-			if len(name) > 23 {
-				name = name[:20] + "..."
-			}
-
-			desc := s.Description
-			if len(desc) > 28 {
-				desc = desc[:25] + "..."
-			}
-
-			execStr := s.ExecPath
-			if len(execStr) > 40 {
-				execStr = execStr[:37] + "..."
-			}
+			name := truncateRunes(s.Name, 23)
+			desc := truncateRunes(s.Description, 28)
+			execStr := truncateRunes(s.ExecPath, 40)
 
 			fmt.Printf("%-10s %-25s %-30s %s\n", st, name, desc, execStr)
 		}

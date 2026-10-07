@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,9 +91,12 @@ func TestImportDryRun(t *testing.T) {
 }
 
 func TestImportExecution(t *testing.T) {
+	// Restore into a fresh $HOME: paths stored in the backup belong to another
+	// user/machine and must not be used as destinations.
 	tmpDir := t.TempDir()
-	unitPath := filepath.Join(tmpDir, "installed.service")
-	xdgPath := filepath.Join(tmpDir, "installed.desktop")
+	t.Setenv("HOME", tmpDir)
+	unitPath := filepath.Join(tmpDir, ".config", "systemd", "user", "installed.service")
+	xdgPath := filepath.Join(tmpDir, ".config", "autostart", "installed.desktop")
 
 	manifest := &BackupManifest{
 		Version: "1.0",
@@ -100,7 +104,7 @@ func TestImportExecution(t *testing.T) {
 			{
 				Name:    "installed.service",
 				Scope:   "user",
-				Path:    unitPath,
+				Path:    "/home/olduser/.config/systemd/user/installed.service",
 				Content: "[Unit]\nDescription=Installed\n",
 			},
 		},
@@ -108,7 +112,7 @@ func TestImportExecution(t *testing.T) {
 			{
 				Name:    "installed.desktop",
 				Scope:   "user",
-				Path:    xdgPath,
+				Path:    "/home/olduser/.config/autostart/installed.desktop",
 				Content: "[Desktop Entry]\nName=Installed\n",
 			},
 		},
@@ -131,5 +135,42 @@ func TestImportExecution(t *testing.T) {
 	xData, err := os.ReadFile(xdgPath)
 	if err != nil || string(xData) != "[Desktop Entry]\nName=Installed\n" {
 		t.Fatalf("desktop file not written correctly: %v, content: %s", err, string(xData))
+	}
+}
+
+func TestImportRejectsUnsafeNames(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manifest := &BackupManifest{
+		Systemd: []UnitBackup{{Name: "../../evil.service", Scope: "user", Content: "x"}},
+		XDG:     []XDGBackup{{Name: "../evil.desktop", Scope: "user", Content: "x"}},
+		Crontab: &CronBackup{SystemFiles: map[string]string{"/etc/passwd": "x"}},
+	}
+	res, err := Import(context.Background(), manifest, false)
+	if err != nil {
+		t.Fatalf("Import failed: %v", err)
+	}
+	if len(res.SystemdRestored) != 0 || len(res.XDGRestored) != 0 || len(res.Errors) != 3 {
+		t.Fatalf("unsafe entries must be rejected, got %+v", res)
+	}
+}
+
+func TestIsPortableUnitLink(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]bool{
+		"/dev/null":                         false,
+		"/usr/lib/systemd/system/a.service": false,
+		"b.service":                         false,
+		"/home/user/project/app.service":    true,
+	}
+	i := 0
+	for target, want := range cases {
+		i++
+		link := filepath.Join(dir, fmt.Sprintf("l%d.service", i))
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if got := isPortableUnitLink(link); got != want {
+			t.Errorf("isPortableUnitLink(-> %s) = %v, want %v", target, got, want)
+		}
 	}
 }

@@ -25,8 +25,8 @@ func (j *CronJob) DisplayName() string {
 	if j.Comment != "" {
 		return j.Comment
 	}
-	if len(j.Command) > 35 {
-		return j.Command[:32] + "..."
+	if r := []rune(j.Command); len(r) > 35 {
+		return string(r[:32]) + "..."
 	}
 	if j.Command != "" {
 		return j.Command

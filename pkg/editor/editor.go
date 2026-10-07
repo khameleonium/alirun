@@ -4,6 +4,7 @@ import (
 	"alirun/pkg/initsys"
 	"alirun/pkg/initsys/cron"
 	"alirun/pkg/initsys/systemd"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -26,6 +27,14 @@ func FindEditor() string {
 		}
 	}
 	return "nano"
+}
+
+// Command builds the command that opens filePath in the user's editor.
+// $VISUAL/$EDITOR may contain arguments (e.g. "code --wait", "emacsclient -t"), so the
+// editor string is interpreted by the shell while the file path is passed as a separate
+// positional argument (no quoting issues with spaces in the path).
+func Command(ctx context.Context, filePath string) *exec.Cmd {
+	return exec.CommandContext(ctx, "/bin/sh", "-c", FindEditor()+` "$1"`, "alirun-editor", filePath)
 }
 
 // EditSession manages the lifecycle of editing a service configuration
@@ -171,6 +180,11 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 		strings.HasPrefix(configPath, "/usr/lib/") ||
 		strings.HasPrefix(configPath, "/lib/")
 
+	// Content of the persistent copy created below (nil if nothing was created). If the user
+	// leaves it unchanged it is removed again, so merely opening a vendor unit does not leave
+	// a full copy that would silently shadow future package updates of that unit.
+	var createdCopy []byte
+
 	if isEphemeralOrVendor && targetPersistentPath != "" && configPath != targetPersistentPath {
 		if err := os.MkdirAll(filepath.Dir(targetPersistentPath), 0755); err != nil {
 			return nil, fmt.Errorf("failed to create directory for override: %w", err)
@@ -180,7 +194,10 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 		if _, err := os.Stat(targetPersistentPath); os.IsNotExist(err) {
 			if existingBytes, readErr := os.ReadFile(configPath); readErr == nil {
 				header := fmt.Sprintf("# Persistent systemd unit override created by alirun for %s\n# Copied from: %s\n\n", info.Name, configPath)
-				_ = os.WriteFile(targetPersistentPath, append([]byte(header), existingBytes...), 0644)
+				copyContent := append([]byte(header), existingBytes...)
+				if err := os.WriteFile(targetPersistentPath, copyContent, 0644); err == nil {
+					createdCopy = copyContent
+				}
 			}
 		}
 
@@ -194,10 +211,22 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 		return nil, fmt.Errorf("failed to ensure config directory %s: %w", dir, err)
 	}
 
+	removeUnchangedCopy := func() {
+		if createdCopy == nil {
+			return
+		}
+		if data, err := os.ReadFile(configPath); err == nil && bytes.Equal(data, createdCopy) {
+			_ = os.Remove(configPath)
+		}
+		createdCopy = nil
+	}
+
 	return &EditSession{
 		FilePath: configPath,
 		IsTemp:   false,
 		OnSaved: func() error {
+			removeUnchangedCopy()
+
 			// If file was left completely empty, remove it to cancel override
 			if data, err := os.ReadFile(configPath); err == nil {
 				if len(strings.TrimSpace(string(data))) == 0 {
@@ -216,7 +245,8 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 			_ = exec.CommandContext(ctx, "systemctl", args...).Run()
 			return nil
 		},
-		Cleanup: func() {},
+		// Also covers the case where the editor failed and OnSaved was never called
+		Cleanup: removeUnchangedCopy,
 	}, nil
 }
 
@@ -224,8 +254,7 @@ func PrepareEdit(ctx context.Context, info *initsys.ServiceInfo, mgr initsys.Man
 func RunInteractive(ctx context.Context, session *EditSession) error {
 	defer session.Cleanup()
 
-	editor := FindEditor()
-	cmd := exec.CommandContext(ctx, editor, session.FilePath)
+	cmd := Command(ctx, session.FilePath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

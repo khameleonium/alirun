@@ -61,9 +61,14 @@ var doctorCmd = &cobra.Command{
 		fmt.Printf("⚠ Found %d failed service(s) in %s scope. Running diagnostic inspection...\n\n", len(failedServices), sType)
 
 		for _, s := range failedServices {
+			// ListServices does not include the command line and unit path; fetch full details
+			info := &s
+			if full, err := mgr.GetStatus(ctx, s.Name, sType); err == nil {
+				info = full
+			}
 			logs := fetchRecentLogs(ctx, mgr, s.Name, sType, 40)
-			report := diagnose.Diagnose(&s, logs)
-			printDiagnosticReport(report, &s)
+			report := diagnose.Diagnose(info, logs)
+			printDiagnosticReport(report, info)
 			fmt.Println()
 		}
 

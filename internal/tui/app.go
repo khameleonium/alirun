@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -50,7 +49,10 @@ type serviceActionMsg struct {
 	err    error
 }
 
-type logLineMsg string
+type logLineMsg struct {
+	gen  int
+	text string
+}
 
 // Model is the main Bubble Tea model for Autolirun
 type Model struct {
@@ -87,6 +89,8 @@ type Model struct {
 	deletingName  string
 
 	logCancel context.CancelFunc
+	logGen    int    // incremented on every log reload; stale logLineMsg are dropped
+	logsFor   string // logKey of the service whose logs are currently shown
 
 	// Real-time metrics
 	metricHistory map[string]*ServiceMetrics
@@ -106,6 +110,7 @@ type Model struct {
 	wScope      initsys.ServiceType
 	wFocusField int // Field index in wizard
 	wError      string
+	wSubmitting bool // install in progress, ignore repeated submits
 }
 
 // NewModel creates an initialized TUI Model
@@ -276,6 +281,7 @@ func (m *Model) initWizardInputs() {
 	m.wFocusField = 0
 	m.wName.Focus()
 	m.wError = ""
+	m.wSubmitting = false
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -321,14 +327,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.rawServices = msg.services
 			m.applyFilter()
-			if len(m.services) > 0 {
-				return m, m.loadSelectedDetailCmd()
+			if cur := m.currentSelected(); cur != nil {
+				cmds := []tea.Cmd{m.loadSelectedDetailCmd()}
+				if m.logKey(cur.Name) != m.logsFor {
+					cmds = append(cmds, m.startLogsStreamCmd())
+				}
+				return m, tea.Batch(cmds...)
 			}
+			m.selectedDetail = nil
 		}
 		return m, nil
 
 	case serviceDetailMsg:
-		if msg.err == nil && msg.detail != nil {
+		if cur := m.currentSelected(); msg.err == nil && msg.detail != nil && cur != nil && cur.Name == msg.detail.Name {
 			m.selectedDetail = msg.detail
 			m.recordMetricSample(msg.detail)
 			for i := range m.services {
@@ -349,6 +360,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case serviceActionMsg:
+		if m.viewState == ViewStateWizard && msg.action == "create" {
+			m.wSubmitting = false
+			if msg.err != nil {
+				// Keep the wizard open so the user can see and fix the problem
+				m.wError = fmt.Sprintf("Install failed: %v", msg.err)
+				return m, nil
+			}
+			m.viewState = ViewStateDashboard
+		}
 		if msg.err != nil {
 			m.statusMessage = fmt.Sprintf("Action failed: %v", msg.err)
 			m.statusIsError = true
@@ -360,7 +380,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case logLineMsg:
-		incoming := strings.Split(string(msg), "\n")
+		if msg.gen != m.logGen {
+			// Response for a previously selected service: ignore it
+			return m, nil
+		}
+		incoming := strings.Split(msg.text, "\n")
 		if len(m.rawLogsLines) == 1 && strings.HasPrefix(m.rawLogsLines[0], "Loading logs for") {
 			m.rawLogsLines = incoming
 		} else {
@@ -376,8 +400,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorFinishedMsg:
+		// Cleanup must run only after OnSaved: for crontab sessions OnSaved reads the
+		// temporary file that Cleanup removes.
 		if msg.session != nil && msg.session.Cleanup != nil {
-			msg.session.Cleanup()
+			defer msg.session.Cleanup()
 		}
 		if msg.err != nil {
 			m.statusMessage = fmt.Sprintf("Editor exited: %v", msg.err)
@@ -655,8 +681,7 @@ func (m *Model) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsError = true
 				return m, nil
 			}
-			ed := editor.FindEditor()
-			c := exec.Command(ed, session.FilePath)
+			c := editor.Command(context.Background(), session.FilePath)
 			return m, tea.ExecProcess(c, func(err error) tea.Msg {
 				return editorFinishedMsg{session: session, err: err}
 			})
@@ -931,6 +956,9 @@ func (m *Model) generateWizardConfig() (initsys.ServiceConfig, string, error) {
 }
 
 func (m *Model) submitWizard(startNow bool) tea.Cmd {
+	if m.wSubmitting {
+		return nil
+	}
 	name := strings.TrimSpace(m.wName.Value())
 	execCmd := strings.TrimSpace(m.wExec.Value())
 
@@ -949,6 +977,8 @@ func (m *Model) submitWizard(startNow bool) tea.Cmd {
 		return nil
 	}
 
+	m.wError = ""
+	m.wSubmitting = true
 	mgr := m.mgr
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -960,7 +990,7 @@ func (m *Model) submitWizard(startNow bool) tea.Cmd {
 		}
 
 		return serviceActionMsg{
-			action: "create & start",
+			action: "create",
 			name:   fmt.Sprintf("%s (%s)", name, savedPath),
 			err:    nil,
 		}
@@ -1164,6 +1194,9 @@ func (m *Model) renderWizardView() string {
 
 	formLines = append(formLines, fmt.Sprintf("%s    %s", btnStart, btnCancel))
 
+	if m.wSubmitting {
+		formLines = append(formLines, "\n"+lipgloss.NewStyle().Bold(true).Foreground(ColorWarning).Render("⏳ Installing..."))
+	}
 	if m.wError != "" {
 		formLines = append(formLines, "\n"+lipgloss.NewStyle().Bold(true).Foreground(ColorFailed).Render("⚠ "+m.wError))
 	}
@@ -1581,6 +1614,10 @@ func (m *Model) startLogsStreamCmd() tea.Cmd {
 		return nil
 	}
 
+	m.logGen++
+	gen := m.logGen
+	m.logsFor = m.logKey(cur.Name)
+
 	m.rawLogsLines = []string{fmt.Sprintf("Loading logs for %s...", cur.Name)}
 	m.logsLines = m.rawLogsLines
 	m.logsViewport.SetContent(strings.Join(m.logsLines, "\n"))
@@ -1596,7 +1633,7 @@ func (m *Model) startLogsStreamCmd() tea.Cmd {
 		// Read initial lines
 		ch, err := mgr.StreamLogs(ctx, name, sType, 60, false)
 		if err != nil {
-			return logLineMsg(fmt.Sprintf("Logs error: %v", err))
+			return logLineMsg{gen: gen, text: fmt.Sprintf("Logs error: %v", err)}
 		}
 		var lines []string
 		for line := range ch {
@@ -1605,8 +1642,13 @@ func (m *Model) startLogsStreamCmd() tea.Cmd {
 		if len(lines) == 0 {
 			lines = append(lines, "(no recent logs found)")
 		}
-		return logLineMsg(strings.Join(lines, "\n"))
+		return logLineMsg{gen: gen, text: strings.Join(lines, "\n")}
 	}
+}
+
+// logKey identifies a service across managers and scopes
+func (m *Model) logKey(name string) string {
+	return fmt.Sprintf("%s|%s|%s", m.mgr.Name(), m.sType, name)
 }
 
 func (m *Model) reapplyLogsFilter() {
@@ -1652,7 +1694,6 @@ func (m *Model) reapplyLogsFilter() {
 	m.logsLines = filtered
 	m.logsViewport.SetContent(strings.Join(m.logsLines, "\n"))
 }
-
 
 func (m *Model) actionCmd(action, name string) tea.Cmd {
 	sType := m.sType

@@ -65,25 +65,15 @@ var cronListCmd = &cobra.Command{
 				stBadge = "○ DISABLED"
 			}
 
-			dispName := s.Name
-			if len(dispName) > 23 {
-				dispName = dispName[:20] + "..."
-			}
-
-			sched := s.SubState
-			if len(sched) > 23 {
-				sched = sched[:20] + "..."
-			}
+			dispName := truncateRunes(s.Name, 23)
+			sched := truncateRunes(s.SubState, 23)
 
 			next := s.TimerNext
 			if next == "" {
 				next = "-"
 			}
 
-			cmdStr := s.ExecPath
-			if len(cmdStr) > 40 {
-				cmdStr = cmdStr[:37] + "..."
-			}
+			cmdStr := truncateRunes(s.ExecPath, 40)
 
 			fmt.Printf("%-10s %-25s %-25s %-18s %s\n", stBadge, dispName, sched, next, cmdStr)
 		}
@@ -123,7 +113,9 @@ var cronAddCmd = &cobra.Command{
 			Type:          getServiceType(),
 		}
 
-		path, err := mgr.InstallService(cmd.Context(), cfg, "", cronAddNow)
+		// The immediate run is performed synchronously below: a background run started
+		// inside InstallService would be killed when the CLI process exits.
+		path, err := mgr.InstallService(cmd.Context(), cfg, "", false)
 		if err != nil {
 			return fmt.Errorf("failed to add cron job: %w", err)
 		}
@@ -136,7 +128,14 @@ var cronAddCmd = &cobra.Command{
 			fmt.Printf("  Comment:  %s\n", cronAddComment)
 		}
 		if cronAddNow {
-			fmt.Println("  Execution: Triggered immediate test run")
+			fmt.Printf("\n▶ Running command once now:\n  $ %s\n\n", cronAddCommand)
+			output, runErr := cronpkg.RunJobCommand(cmd.Context(), cronAddCommand)
+			if output != "" {
+				fmt.Println(output)
+			}
+			if runErr != nil {
+				return fmt.Errorf("job was added, but the immediate run failed: %w", runErr)
+			}
 		}
 
 		return nil

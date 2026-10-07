@@ -4,6 +4,7 @@ import (
 	"alirun/pkg/initsys"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -108,6 +109,15 @@ func GenerateUnitFile(cfg initsys.ServiceConfig) (string, error) {
 	return string(buf), nil
 }
 
+// timeSpanRe matches systemd time spans (systemd.time(7)): "15m", "30min", "1h 30min", "2d", "1w"
+var timeSpanRe = regexp.MustCompile(`^(\d+(\.\d+)?\s*(usec|us|µs|msec|ms|seconds|second|sec|s|minutes|minute|min|m|hours|hour|hr|h|days|day|d|weeks|week|w|months|month|M|years|year|y)\s*)+$`)
+
+// IsTimeSpan reports whether schedule is a relative interval (OnUnitActiveSec=)
+// rather than a calendar expression (OnCalendar=).
+func IsTimeSpan(schedule string) bool {
+	return timeSpanRe.MatchString(strings.TrimSpace(schedule))
+}
+
 // GenerateTimerFile generates valid systemd .timer unit content
 func GenerateTimerFile(cfg initsys.ServiceConfig) (string, error) {
 	if strings.TrimSpace(cfg.Name) == "" {
@@ -122,8 +132,8 @@ func GenerateTimerFile(cfg initsys.ServiceConfig) (string, error) {
 	var opts []*unit.UnitOption
 	opts = append(opts, unit.NewUnitOption("Unit", "Description", fmt.Sprintf("Timer for %s (managed by Alirun)", cfg.Name)))
 
-	// Check if schedule is interval (e.g. "15m", "1h") or calendar
-	if strings.HasSuffix(schedule, "s") || strings.HasSuffix(schedule, "m") || strings.HasSuffix(schedule, "h") {
+	// Check if schedule is interval (e.g. "15m", "30min", "1h 30min", "2d") or calendar
+	if IsTimeSpan(schedule) {
 		opts = append(opts, unit.NewUnitOption("Timer", "OnUnitActiveSec", schedule))
 		opts = append(opts, unit.NewUnitOption("Timer", "OnBootSec", "1m"))
 	} else {

@@ -53,8 +53,10 @@ var listCmd = &cobra.Command{
 					continue
 				}
 			}
-			if !flagListAll && s.Status == initsys.StatusInactive && s.SubState == "dead" && !s.Enabled {
-				// Skip dead and disabled by default unless --all
+			// Skip stopped units that are neither enabled for autostart nor driven by a timer
+			// (unless --all). "static" units are skipped too: they can't be enabled.
+			if !flagListAll && s.Status == initsys.StatusInactive && s.SubState == "dead" &&
+				!s.IsTimer && !strings.HasPrefix(s.UnitFileState, "enabled") {
 				continue
 			}
 			filtered = append(filtered, s)
@@ -85,7 +87,7 @@ var listCmd = &cobra.Command{
 		sortDir := tui.SortAsc
 		if flagListReverse {
 			sortDir = tui.SortDesc
-		} else if cmd.Flags().Changed("sort") && (flagListSort == "cpu" || flagListSort == "ram" || flagListSort == "memory" || flagListSort == "uptime" || flagListSort == "start") {
+		} else if cmd.Flags().Changed("sort") && sortField != tui.SortByName && sortField != tui.SortByStatus {
 			sortDir = tui.SortDesc
 		}
 
@@ -131,9 +133,7 @@ var listCmd = &cobra.Command{
 
 			desc := s.Description
 			if flagListDetailed {
-				if len(desc) > 30 {
-					desc = desc[:27] + "..."
-				}
+				desc = truncateRunes(desc, 30)
 				t.Row(
 					statusBadge,
 					s.Name,
@@ -145,9 +145,7 @@ var listCmd = &cobra.Command{
 					desc,
 				)
 			} else {
-				if len(desc) > 40 {
-					desc = desc[:37] + "..."
-				}
+				desc = truncateRunes(desc, 40)
 				t.Row(statusBadge, s.Name, s.InitSystem, string(s.Type), s.SubState, desc)
 			}
 		}

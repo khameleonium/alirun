@@ -40,15 +40,23 @@ or maintaining active outbound connections (using -a / --all).`,
 			Command string
 		}
 
+		// ListServices does not include the command line; fetch it only for services shown
+		commandFor := func(s initsys.ServiceInfo) string {
+			cmdStr := s.ExecPath
+			if cmdStr == "" {
+				if full, err := mgr.GetStatus(ctx, s.Name, sType); err == nil {
+					cmdStr = full.ExecPath
+				}
+			}
+			return truncateRunes(cmdStr, 36)
+		}
+
 		var activeWithPorts []portEntry
 		for _, s := range services {
 			if s.PID > 0 {
 				netSum := netinfo.GetNetSummaryForPID(s.PID)
 				if len(netSum.Listening) > 0 {
-					cmdStr := s.ExecPath
-					if len(cmdStr) > 36 {
-						cmdStr = cmdStr[:33] + "..."
-					}
+					cmdStr := commandFor(s)
 					activeWithPorts = append(activeWithPorts, portEntry{
 						Name:    s.Name,
 						PID:     s.PID,
@@ -57,10 +65,7 @@ or maintaining active outbound connections (using -a / --all).`,
 						Command: cmdStr,
 					})
 				} else if showAllNet && netSum.OutboundCount > 0 {
-					cmdStr := s.ExecPath
-					if len(cmdStr) > 36 {
-						cmdStr = cmdStr[:33] + "..."
-					}
+					cmdStr := commandFor(s)
 					activeWithPorts = append(activeWithPorts, portEntry{
 						Name:    s.Name,
 						PID:     s.PID,

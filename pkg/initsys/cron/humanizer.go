@@ -140,8 +140,8 @@ func NextRun(schedule string, from time.Time) time.Time {
 	minMatcher, err1 := parseCronField(parts[0], 0, 59)
 	hourMatcher, err2 := parseCronField(parts[1], 0, 23)
 	domMatcher, err3 := parseCronField(parts[2], 1, 31)
-	monMatcher, err4 := parseCronField(parts[3], 1, 12)
-	dowMatcher, err5 := parseCronField(parts[4], 0, 7) // 0 and 7 = Sun
+	monMatcher, err4 := parseCronFieldNamed(parts[3], 1, 12, monthNames)
+	dowMatcher, err5 := parseCronFieldNamed(parts[4], 0, 7, dowNames) // 0 and 7 = Sun
 
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
 		return time.Time{}
@@ -165,17 +165,13 @@ func NextRun(schedule string, from time.Time) time.Time {
 		dow := int(t.Weekday())
 		dowMatch := dowMatcher[dow] || (dow == 0 && dowMatcher[7])
 
-		// In standard cron, if both DOM and DOW are specified (not *), it is an OR condition
-		dayMatches := false
-		isDomStar := parts[2] == "*"
-		isDowStar := parts[4] == "*"
-
-		if isDomStar && isDowStar {
-			dayMatches = true
-		} else if isDomStar {
-			dayMatches = dowMatch
-		} else if isDowStar {
-			dayMatches = domMatch
+		// Vixie cron semantics: if either DOM or DOW starts with "*" both must match,
+		// otherwise (both restricted) matching either one is enough.
+		isDomStar := strings.HasPrefix(parts[2], "*")
+		isDowStar := strings.HasPrefix(parts[4], "*")
+		var dayMatches bool
+		if isDomStar || isDowStar {
+			dayMatches = domMatch && dowMatch
 		} else {
 			dayMatches = domMatch || dowMatch
 		}
@@ -206,54 +202,83 @@ func NextRun(schedule string, from time.Time) time.Time {
 	return time.Time{}
 }
 
-// parseCronField parses cron field expressions like "*", "*/5", "1,2,3", "10-20"
+var (
+	monthNames = map[string]int{
+		"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+		"jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+	}
+	dowNames = map[string]int{
+		"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6,
+	}
+)
+
+// parseCronField parses numeric cron field expressions like "*", "*/5", "1,2,3", "10-20", "9-17/2"
 func parseCronField(expr string, min, max int) (map[int]bool, error) {
+	return parseCronFieldNamed(expr, min, max, nil)
+}
+
+// parseCronFieldNamed parses a cron field, additionally accepting symbolic names
+// (e.g. "jan", "mon-fri") from the given names table.
+func parseCronFieldNamed(expr string, min, max int, names map[string]int) (map[int]bool, error) {
+	parseVal := func(v string) (int, error) {
+		if n, ok := names[strings.ToLower(v)]; ok {
+			return n, nil
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, fmt.Errorf("invalid number: %s", v)
+		}
+		return n, nil
+	}
+
 	res := make(map[int]bool)
 	for _, part := range strings.Split(expr, ",") {
 		part = strings.TrimSpace(part)
-		if part == "*" {
-			for i := min; i <= max; i++ {
-				res[i] = true
-			}
-			continue
+		if part == "" {
+			return nil, fmt.Errorf("empty element in %q", expr)
 		}
 
-		if strings.HasPrefix(part, "*/") {
-			stepStr := strings.TrimPrefix(part, "*/")
-			step, err := strconv.Atoi(stepStr)
-			if err != nil || step <= 0 {
+		// Optional step suffix: "*/5", "10-20/2"
+		step := 1
+		if base, stepStr, hasStep := strings.Cut(part, "/"); hasStep {
+			n, err := strconv.Atoi(stepStr)
+			if err != nil || n <= 0 {
 				return nil, fmt.Errorf("invalid step: %s", part)
 			}
-			for i := min; i <= max; i += step {
-				res[i] = true
-			}
-			continue
+			step = n
+			part = base
 		}
 
-		if strings.Contains(part, "-") {
+		start, end := min, max
+		switch {
+		case part == "*":
+			// full range
+		case strings.Contains(part, "-"):
 			rangeParts := strings.Split(part, "-")
 			if len(rangeParts) != 2 {
 				return nil, fmt.Errorf("invalid range: %s", part)
 			}
-			start, err1 := strconv.Atoi(rangeParts[0])
-			end, err2 := strconv.Atoi(rangeParts[1])
-			if err1 != nil || err2 != nil || start > end {
+			s, err1 := parseVal(rangeParts[0])
+			e, err2 := parseVal(rangeParts[1])
+			if err1 != nil || err2 != nil || s > e {
 				return nil, fmt.Errorf("invalid range numbers: %s", part)
 			}
-			for i := start; i <= end; i++ {
-				if i >= min && i <= max {
-					res[i] = true
-				}
+			start, end = s, e
+		default:
+			v, err := parseVal(part)
+			if err != nil {
+				return nil, err
 			}
-			continue
+			start = v
+			if step == 1 {
+				end = v
+			}
 		}
 
-		val, err := strconv.Atoi(part)
-		if err != nil {
-			return nil, fmt.Errorf("invalid number: %s", part)
-		}
-		if val >= min && val <= max {
-			res[val] = true
+		for i := start; i <= end; i += step {
+			if i >= min && i <= max {
+				res[i] = true
+			}
 		}
 	}
 

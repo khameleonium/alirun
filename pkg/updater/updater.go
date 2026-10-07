@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/creativeprojects/go-selfupdate"
 )
 
@@ -58,12 +59,17 @@ func CheckForUpdate(ctx context.Context, repo string) (*UpdateResult, error) {
 		return nil, fmt.Errorf("failed to check for updates: %w", err)
 	}
 
-	result := &UpdateResult{
-		CurrentVersion: Version,
-		Found:          found,
+	newer, err := isNewerRelease(latest, found)
+	if err != nil {
+		return nil, err
 	}
 
-	if found && latest != nil {
+	result := &UpdateResult{
+		CurrentVersion: Version,
+		Found:          newer,
+	}
+
+	if newer {
 		result.LatestVersion = latest.Version()
 		result.ReleaseNotes = latest.ReleaseNotes
 		result.URL = latest.URL
@@ -95,7 +101,11 @@ func SelfUpdate(ctx context.Context, repo string) (*UpdateResult, error) {
 		return nil, fmt.Errorf("failed to check for updates: %w", err)
 	}
 
-	if !found || latest == nil {
+	newer, err := isNewerRelease(latest, found)
+	if err != nil {
+		return nil, err
+	}
+	if !newer {
 		return &UpdateResult{
 			CurrentVersion: Version,
 			Found:          false,
@@ -118,4 +128,27 @@ func SelfUpdate(ctx context.Context, repo string) (*UpdateResult, error) {
 		ReleaseNotes:   latest.ReleaseNotes,
 		URL:            latest.URL,
 	}, nil
+}
+
+// isNewerRelease reports whether the detected release is strictly newer than the running binary.
+// DetectLatest only tells that a release exists, so the version comparison has to be done here,
+// otherwise the same (or an older) release would be re-installed on every run.
+func isNewerRelease(latest *selfupdate.Release, found bool) (bool, error) {
+	if !found || latest == nil {
+		return false, nil
+	}
+	return isNewerVersion(latest.Version(), Version)
+}
+
+// isNewerVersion compares two semantic versions ("v1.2.3" or "1.2.3")
+func isNewerVersion(latest, current string) (bool, error) {
+	cur, err := semver.NewVersion(current)
+	if err != nil {
+		return false, fmt.Errorf("current version %q is not a release version (development build); install a release build to use self-update", current)
+	}
+	lat, err := semver.NewVersion(latest)
+	if err != nil {
+		return false, fmt.Errorf("invalid release version %q: %w", latest, err)
+	}
+	return lat.GreaterThan(cur), nil
 }

@@ -41,18 +41,20 @@ type ServiceInfo struct {
 	Status      ServiceStatus `json:"status"`
 	SubState    string        `json:"sub_state"`
 	Enabled     bool          `json:"enabled"`
-	PID          int           `json:"pid"`
-	MemoryBytes  uint64        `json:"memory_bytes"`
-	CPUUsageNSec uint64        `json:"cpu_usage_nsec"`
-	TasksCurrent uint64        `json:"tasks_current"`
-	IsTimer      bool          `json:"is_timer"`
-	TimerNext    string        `json:"timer_next"`
-	ConfigPath   string        `json:"config_path"`
-	ExecPath     string        `json:"exec_path"`
-	ActiveSince  time.Time     `json:"active_since"`
-	InitSystem   string        `json:"init_system"`
-	Ports        []string      `json:"ports,omitempty"`
-	NetSummary   string        `json:"net_summary,omitempty"`
+	// UnitFileState is the raw systemd unit file state ("enabled", "static", "disabled", ...)
+	UnitFileState string    `json:"unit_file_state,omitempty"`
+	PID           int       `json:"pid"`
+	MemoryBytes   uint64    `json:"memory_bytes"`
+	CPUUsageNSec  uint64    `json:"cpu_usage_nsec"`
+	TasksCurrent  uint64    `json:"tasks_current"`
+	IsTimer       bool      `json:"is_timer"`
+	TimerNext     string    `json:"timer_next"`
+	ConfigPath    string    `json:"config_path"`
+	ExecPath      string    `json:"exec_path"`
+	ActiveSince   time.Time `json:"active_since"`
+	InitSystem    string    `json:"init_system"`
+	Ports         []string  `json:"ports,omitempty"`
+	NetSummary    string    `json:"net_summary,omitempty"`
 }
 
 // ServiceConfig contains user inputs to generate a new service configuration

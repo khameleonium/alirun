@@ -2,14 +2,13 @@ package cmd
 
 import (
 	"alirun/pkg/detector"
+	"alirun/pkg/editor"
 	"alirun/pkg/highlighter"
 	"alirun/pkg/initsys"
 	"alirun/pkg/initsys/systemd"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -341,12 +340,7 @@ var createCmd = &cobra.Command{
 			_ = os.WriteFile(tmpPath, []byte(content), 0644)
 			tmpFile.Close()
 
-			editor := os.Getenv("EDITOR")
-			if editor == "" {
-				editor = "nano"
-			}
-
-			cmd := exec.Command(editor, tmpPath)
+			cmd := editor.Command(context.Background(), tmpPath)
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -407,11 +401,4 @@ func init() {
 	createCmd.Flags().BoolVar(&flagCreateNow, "now", true, "Enable and start immediately")
 	createCmd.Flags().BoolVar(&flagCreateNonInter, "non-interactive", false, "Do not prompt interactively")
 	rootCmd.AddCommand(createCmd)
-}
-
-func parseIntOrDefault(s string, def int) int {
-	if n, err := strconv.Atoi(s); err == nil {
-		return n
-	}
-	return def
 }

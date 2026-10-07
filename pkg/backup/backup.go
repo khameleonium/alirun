@@ -92,6 +92,11 @@ func Export(ctx context.Context, sType initsys.ServiceType) (*BackupManifest, er
 			name := e.Name()
 			if strings.HasSuffix(name, ".service") || strings.HasSuffix(name, ".timer") {
 				fullPath := filepath.Join(dir, name)
+				if e.Type()&os.ModeSymlink != 0 && !isPortableUnitLink(fullPath) {
+					// Aliases, masks (/dev/null) and links to vendor units are managed by
+					// systemd itself; restoring them as regular files would break them.
+					continue
+				}
 				content, err := os.ReadFile(fullPath)
 				if err != nil {
 					continue
@@ -186,6 +191,31 @@ func Export(ctx context.Context, sType initsys.ServiceType) (*BackupManifest, er
 	return manifest, nil
 }
 
+// isPortableUnitLink reports whether a symlinked unit points to a user-provided unit file
+// (e.g. created by "systemctl link /path/app.service") whose content is worth exporting.
+// Masked units, aliases and links into system/vendor unit directories are not portable.
+func isPortableUnitLink(path string) bool {
+	target, err := os.Readlink(path)
+	if err != nil || !filepath.IsAbs(target) {
+		return false // relative links are aliases within the unit directory
+	}
+	for _, prefix := range []string{"/dev/", "/usr/lib/", "/lib/", "/etc/systemd/", "/run/", "/usr/share/"} {
+		if strings.HasPrefix(target, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// safeBaseName validates that a name from a backup manifest is a plain file name
+func safeBaseName(name string) (string, error) {
+	base := filepath.Base(name)
+	if name == "" || base != name || base == "." || base == ".." {
+		return "", fmt.Errorf("invalid file name %q in backup", name)
+	}
+	return base, nil
+}
+
 // ToYAML serializes the manifest to formatted YAML
 func (m *BackupManifest) ToYAML() ([]byte, error) {
 	return yaml.Marshal(m)
@@ -205,15 +235,26 @@ func Import(ctx context.Context, manifest *BackupManifest, dryRun bool) (*Import
 	res := &ImportResult{}
 
 	// 1. Restore Systemd Units
+	home, _ := os.UserHomeDir()
+
 	for _, u := range manifest.Systemd {
-		destPath := u.Path
-		if destPath == "" {
-			if u.Scope == string(initsys.TypeUser) {
-				home, _ := os.UserHomeDir()
-				destPath = filepath.Join(home, ".config", "systemd", "user", u.Name)
-			} else {
-				destPath = filepath.Join("/etc/systemd/system", u.Name)
+		// The destination is always derived from the scope and the current $HOME instead of
+		// the absolute path stored in the backup, so backups can be restored on other machines
+		// and for other user names.
+		name, err := safeBaseName(u.Name)
+		if err != nil {
+			res.Errors = append(res.Errors, err.Error())
+			continue
+		}
+		var destPath string
+		if u.Scope == string(initsys.TypeUser) {
+			if home == "" {
+				res.Errors = append(res.Errors, fmt.Sprintf("cannot restore %s: home directory is unknown", name))
+				continue
 			}
+			destPath = filepath.Join(home, ".config", "systemd", "user", name)
+		} else {
+			destPath = filepath.Join("/etc/systemd/system", name)
 		}
 
 		if dryRun {
@@ -284,7 +325,12 @@ func Import(ctx context.Context, manifest *BackupManifest, dryRun bool) (*Import
 
 		if len(manifest.Crontab.SystemFiles) > 0 && !dryRun {
 			for fPath, content := range manifest.Crontab.SystemFiles {
-				if err := os.WriteFile(fPath, []byte(content), 0644); err != nil {
+				clean := filepath.Clean(fPath)
+				if clean != "/etc/crontab" && filepath.Dir(clean) != "/etc/cron.d" {
+					res.Errors = append(res.Errors, fmt.Sprintf("refusing to restore unexpected cron path %s", fPath))
+					continue
+				}
+				if err := os.WriteFile(clean, []byte(content), 0644); err != nil {
 					res.Errors = append(res.Errors, fmt.Sprintf("failed to restore %s: %v", fPath, err))
 				}
 			}
@@ -293,14 +339,20 @@ func Import(ctx context.Context, manifest *BackupManifest, dryRun bool) (*Import
 
 	// 3. Restore XDG Autostart
 	for _, x := range manifest.XDG {
-		destPath := x.Path
-		if destPath == "" {
-			if x.Scope == string(initsys.TypeUser) {
-				home, _ := os.UserHomeDir()
-				destPath = filepath.Join(home, ".config", "autostart", x.Name)
-			} else {
-				destPath = filepath.Join("/etc/xdg/autostart", x.Name)
+		name, err := safeBaseName(x.Name)
+		if err != nil {
+			res.Errors = append(res.Errors, err.Error())
+			continue
+		}
+		var destPath string
+		if x.Scope == string(initsys.TypeUser) {
+			if home == "" {
+				res.Errors = append(res.Errors, fmt.Sprintf("cannot restore %s: home directory is unknown", name))
+				continue
 			}
+			destPath = filepath.Join(home, ".config", "autostart", name)
+		} else {
+			destPath = filepath.Join("/etc/xdg/autostart", name)
 		}
 
 		if dryRun {

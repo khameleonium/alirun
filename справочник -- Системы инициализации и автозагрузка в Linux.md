@@ -213,15 +213,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=virusfun
-Group=virusfun
-WorkingDirectory=/home/virusfun/my-web-app
-ExecStart=/usr/bin/python3 /home/virusfun/my-web-app/server.py --port 8080
+User=UserName
+Group=UserName
+WorkingDirectory=/home/UserName/my-web-app
+ExecStart=/usr/bin/python3 /home/UserName/my-web-app/server.py --port 8080
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 Environment="APP_ENV=production" "PORT=8080"
-EnvironmentFile=-/home/virusfun/my-web-app/.env
+EnvironmentFile=-/home/UserName/my-web-app/.env
 
 # Ограничения безопасности и ресурсов (cgroups)
 MemoryMax=512M
@@ -321,7 +321,7 @@ systemctl --user list-units --all '*@*'   # то же для пользоват�
 
 #### Как экземпляр получает свой параметр: спецификаторы `%`
 
-Внутри unit-файла можно писать **спецификаторы** — заменители, вместо которых systemd при запуске подставляет нужное значение. Самые полезные (значения в примере — для экземпляра `bot@hello\x2dworld.service`, запущенного пользователем `virusfun` через `systemctl --user`):
+Внутри unit-файла можно писать **спецификаторы** — заменители, вместо которых systemd при запуске подставляет нужное значение. Самые полезные (значения в примере — для экземпляра `bot@hello\x2dworld.service`, запущенного пользователем `UserName` через `systemctl --user`):
 
 | Спецификатор | Значение | Пример |
 | :--- | :--- | :--- |
@@ -330,8 +330,8 @@ systemctl --user list-units --all '*@*'   # то же для пользоват�
 | `%n` | Полное имя юнита | `bot@hello\x2dworld.service` |
 | `%N` | Полное имя без типа | `bot@hello\x2dworld` |
 | `%p` | Префикс — имя шаблона до `@` | `bot` |
-| `%h` | Домашний каталог пользователя | `/home/virusfun` |
-| `%u` / `%U` | Имя / UID пользователя | `virusfun` / `1000` |
+| `%h` | Домашний каталог пользователя | `/home/UserName` |
+| `%u` / `%U` | Имя / UID пользователя | `UserName` / `1000` |
 | `%t` | Каталог для временных runtime-файлов | `/run/user/1000` (у системных служб — `/run`) |
 
 > **Две ловушки:**
@@ -379,7 +379,7 @@ journalctl --user -u bot@news -f         # логи одного экземпл�
 
 #### Почему в именах встречается `\x2d`: экранирование
 
-В именах юнитов дефис `-` занят: юниты, привязанные к путям (`.mount`, `.swap`, `.device`, `.path`), кодируют каждый `/` пути как `-`. Например, точка монтирования `/home/virusfun/data` превращается в юнит `home-virusfun-data.mount`. Поэтому «настоящий» дефис, а также пробел и другие особые символы в таких именах записываются шестнадцатеричным кодом: `\x2d` — дефис, `\x20` — пробел. Так же кодируются имена экземпляров и юниты, созданные генераторами:
+В именах юнитов дефис `-` занят: юниты, привязанные к путям (`.mount`, `.swap`, `.device`, `.path`), кодируют каждый `/` пути как `-`. Например, точка монтирования `/home/UserName/data` превращается в юнит `home-UserName-data.mount`. Поэтому «настоящий» дефис, а также пробел и другие особые символы в таких именах записываются шестнадцатеричным кодом: `\x2d` — дефис, `\x20` — пробел. Так же кодируются имена экземпляров и юниты, созданные генераторами:
 
 - `systemd-fsck@dev-disk-by\x2duuid-0e94….service` — проверка диска `/dev/disk/by-uuid/0e94…`;
 - `app-at\x2dspi\x2ddbus\x2dbus@autostart.service` — автозапуск `at-spi-dbus-bus.desktop`.
@@ -389,7 +389,7 @@ journalctl --user -u bot@news -f         # логи одного экземпл�
 ```bash
 systemd-escape 'at-spi-dbus-bus'                      # → at\x2dspi\x2ddbus\x2dbus
 systemd-escape -u 'at\x2dspi\x2ddbus\x2dbus'          # → at-spi-dbus-bus (раскодировать)
-systemd-escape -p --suffix=mount /home/virusfun/data  # → home-virusfun-data.mount
+systemd-escape -p --suffix=mount /home/UserName/data  # → home-UserName-data.mount
 systemd-escape --template=bot@.service 'my bot'       # → bot@my\x20bot.service
 ```
 
@@ -463,7 +463,7 @@ journalctl -u my-app -p err
 ### Примеры ситуаций и готовые шаблоны (Systemd)
 
 #### Ситуация 1: Фоновый бот/скрипт пользователя с автозапуском и защитой от падений
-*Задача:* У вас есть скрипт Telegram-бота `/home/virusfun/bot/run.py`. Вы хотите, чтобы он стартовал при входе в систему, автоматически перезапускался при ошибках и писал логи в journal. Права root не требуются.
+*Задача:* У вас есть скрипт Telegram-бота `/home/UserName/bot/run.py`. Вы хотите, чтобы он стартовал при входе в систему, автоматически перезапускался при ошибках и писал логи в journal. Права root не требуются.
 
 1. Создаём каталог:
    ```bash
@@ -478,7 +478,7 @@ journalctl -u my-app -p err
 
    [Service]
    Type=simple
-   WorkingDirectory=/home/virusfun/bot
+   WorkingDirectory=/home/UserName/bot
    ExecStart=/usr/bin/python3 -u run.py
    Restart=on-failure
    RestartSec=5s
@@ -562,7 +562,7 @@ Description=Daily Home Directory Backup
 
 [Service]
 Type=oneshot
-ExecStart=/home/virusfun/scripts/backup.sh
+ExecStart=/home/UserName/scripts/backup.sh
 ```
 
 Файл `~/.config/systemd/user/backup.timer`:
@@ -676,25 +676,25 @@ Cron — проверенная временем система запуска �
      */10 * * * * python3 script.py
      
      # ПРАВИЛЬНО:
-     */10 * * * * /usr/bin/python3 /home/virusfun/scripts/script.py
+     */10 * * * * /usr/bin/python3 /home/UserName/scripts/script.py
      ```
 2. **Текущая рабочая директория:**
    - Cron запускает команды из домашнего каталога пользователя (`/home/username`), а не из папки, где лежит скрипт. Относительные пути к файлам (`open("data.csv")`) сломаются.
    - **Решение:** Делать переход в папку перед запуском:
      ```bash
-     */10 * * * * cd /home/virusfun/scripts && /usr/bin/python3 script.py
+     */10 * * * * cd /home/UserName/scripts && /usr/bin/python3 script.py
      ```
 3. **Потеря вывода ошибок:**
    - По умолчанию cron пытается отправить `stdout` и `stderr` локальной почтой (которая обычно не настроена). Если скрипт падает, вы даже не узнаете почему.
    - **Решение:** Всегда перенаправляйте поток вывода и ошибок в лог-файл:
      ```bash
-     0 4 * * * /home/virusfun/backup.sh >> /home/virusfun/backup.log 2>&1
+     0 4 * * * /home/UserName/backup.sh >> /home/UserName/backup.log 2>&1
      ```
 4. **Символ `%` в команде:**
    - В crontab `%` означает перевод строки: всё после первого неэкранированного `%` передаётся команде на стандартный ввод. Поэтому команда с `date +%F` в cron сломается.
    - **Решение:** Экранируйте его обратным слешем:
      ```bash
-     0 3 * * * /usr/bin/tar czf /home/virusfun/backup/home-$(date +\%F).tar.gz /home/virusfun/Documents
+     0 3 * * * /usr/bin/tar czf /home/UserName/backup/home-$(date +\%F).tar.gz /home/UserName/Documents
      ```
 
 ---
@@ -724,7 +724,7 @@ Cron — проверенная временем система запуска �
 Type=Application
 Name=Моя Фоновая Утилита
 Comment=Автозапуск утилиты при входе на рабочий стол
-Exec=/home/virusfun/bin/my-tool --minimized
+Exec=/home/UserName/bin/my-tool --minimized
 Icon=utilities-terminal
 Terminal=false
 Hidden=false
